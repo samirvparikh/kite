@@ -1,0 +1,116 @@
+.nifty-page {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  color: #1f2937;
+  text-align: left;
+}
+
+.nifty-container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0;
+}
+
+.nifty-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.nifty-back {
+  text-decoration: none;
+  color: #1d4ed8;
+  font-weight: bold;
+}
+
+.nifty-back:hover {
+  text-decoration: underline;
+}
+
+.nifty-card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+  padding: 14px;
+  margin-bottom: 14px;
+}
+
+.nifty-card-table {
+  overflow-x: auto;
+  padding: 0;
+}
+
+.nifty-muted {
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.nifty-btn {
+  border: 1px solid #dbeafe;
+  background: #2563eb;
+  color: #fff;
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.nifty-btn:hover {
+  background: #1d4ed8;
+}
+
+.nifty-inline-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.nifty-inline-form input[type="date"] {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 7px 10px;
+}
+
+.nifty-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.nifty-table th,
+.nifty-table td {
+  padding: 11px 12px;
+  border-bottom: 1px solid #e5e7eb;
+  text-align: left;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.nifty-table th {
+  background: #f8fafc;
+  color: #334155;
+}
+
+.nifty-positive {
+  color: #059669;
+  font-weight: bold;
+}
+
+.nifty-warning {
+  color: #b45309;
+}
+
+.nifty-symbol-link {
+  color: #1d4ed8;
+  text-decoration: none;
+  font-weight: bold;
+}
+
+.nifty-symbol-link:hover {
+  text-decoration: underline;
+}

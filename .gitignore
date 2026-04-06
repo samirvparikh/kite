@@ -1,0 +1,22 @@
+# Environment secrets (never commit)
+.env
+.env.*.local
+kite-app/backend/.env
+
+# Dependencies
+node_modules/
+
+# Frontend build
+kite-app/frontend/dist/
+kite-app/frontend/dist-ssr/
+
+# Logs & debug
+*.log
+npm-debug.log*
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
