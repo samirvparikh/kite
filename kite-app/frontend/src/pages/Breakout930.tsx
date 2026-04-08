@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { isAxiosError } from "axios";
@@ -18,9 +18,138 @@ type ScanRow = {
 
 type ErrorRow = { symbol: string; reason: string };
 
+type KiteQuoteEnvelope = {
+  data?: Record<string, { last_price?: number | string }>;
+};
+
 function formatAmount(value: unknown): string {
   const n = typeof value === "number" ? value : parseFloat(String(value ?? 0));
   return Number.isFinite(n) ? n.toFixed(2) : "0.00";
+}
+
+type SortCol = "symbol" | "high_915" | "low_930" | "scan_ref" | "vs" | "ltp";
+type SortDir = "asc" | "desc";
+
+function tieBreakSymbol(a: ScanRow, b: ScanRow, cmp: number): number {
+  if (cmp !== 0) return cmp;
+  return a.symbol.localeCompare(b.symbol);
+}
+
+function sortBreakoutRows(
+  rows: ScanRow[],
+  col: SortCol,
+  dir: SortDir,
+  liveLtp: Record<string, number>
+): ScanRow[] {
+  if (rows.length === 0) return rows;
+  const mul = dir === "asc" ? 1 : -1;
+  const copy = [...rows];
+  copy.sort((a, b) => {
+    let cmp = 0;
+    switch (col) {
+      case "symbol":
+        cmp = a.symbol.localeCompare(b.symbol);
+        break;
+      case "high_915":
+        cmp = a.high_915 - b.high_915;
+        break;
+      case "low_930":
+        cmp = a.low_930 - b.low_930;
+        break;
+      case "scan_ref":
+        cmp = a.latest_price - b.latest_price;
+        break;
+      case "vs":
+        cmp = (a.vs_high_915 ?? 0) - (b.vs_high_915 ?? 0);
+        break;
+      case "ltp": {
+        const la = liveLtp[a.symbol] ?? a.latest_price;
+        const lb = liveLtp[b.symbol] ?? b.latest_price;
+        cmp = la - lb;
+        break;
+      }
+      default:
+        cmp = 0;
+    }
+    return tieBreakSymbol(a, b, cmp * mul);
+  });
+  return copy;
+}
+
+function sortBreakdownRows(
+  rows: ScanRow[],
+  col: SortCol,
+  dir: SortDir,
+  liveLtp: Record<string, number>
+): ScanRow[] {
+  if (rows.length === 0) return rows;
+  const mul = dir === "asc" ? 1 : -1;
+  const copy = [...rows];
+  copy.sort((a, b) => {
+    let cmp = 0;
+    switch (col) {
+      case "symbol":
+        cmp = a.symbol.localeCompare(b.symbol);
+        break;
+      case "high_915":
+        cmp = a.high_915 - b.high_915;
+        break;
+      case "low_930":
+        cmp = a.low_930 - b.low_930;
+        break;
+      case "scan_ref":
+        cmp = a.latest_price - b.latest_price;
+        break;
+      case "vs":
+        cmp = (a.vs_low_930 ?? 0) - (b.vs_low_930 ?? 0);
+        break;
+      case "ltp": {
+        const la = liveLtp[a.symbol] ?? a.latest_price;
+        const lb = liveLtp[b.symbol] ?? b.latest_price;
+        cmp = la - lb;
+        break;
+      }
+      default:
+        cmp = 0;
+    }
+    return tieBreakSymbol(a, b, cmp * mul);
+  });
+  return copy;
+}
+
+type SortState = { col: SortCol; dir: SortDir };
+
+function ScanSortTh({
+  column,
+  label,
+  sort,
+  onSort,
+}: {
+  column: SortCol;
+  label: string;
+  sort: SortState;
+  onSort: (c: SortCol) => void;
+}) {
+  const active = sort.col === column;
+  const ariaSort = active
+    ? sort.dir === "asc"
+      ? "ascending"
+      : "descending"
+    : "none";
+  return (
+    <th scope="col" aria-sort={ariaSort}>
+      <button
+        type="button"
+        className="nifty-th-sort"
+        onClick={() => onSort(column)}
+      >
+        {label}
+        <span className="nifty-sort-ind" aria-hidden>
+          {active ? (sort.dir === "asc" ? " ▲" : " ▼") : ""}
+        </span>
+      </button>
+    </th>
+  );
 }
 
 function istToday(): string {
@@ -60,6 +189,30 @@ const Breakout930: React.FC = () => {
   const [breakdownRows, setBreakdownRows] = useState<ScanRow[]>([]);
   const [errorRows, setErrorRows] = useState<ErrorRow[]>([]);
   const [totalSymbols, setTotalSymbols] = useState(50);
+  const [liveLtp, setLiveLtp] = useState<Record<string, number>>({});
+  const [breakoutSort, setBreakoutSort] = useState<SortState>({
+    col: "symbol",
+    dir: "asc",
+  });
+  const [breakdownSort, setBreakdownSort] = useState<SortState>({
+    col: "symbol",
+    dir: "asc",
+  });
+
+  const listSymbolKey = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of breakoutRows) set.add(r.symbol);
+    for (const r of breakdownRows) set.add(r.symbol);
+    return [...set].sort().join(",");
+  }, [breakoutRows, breakdownRows]);
+
+  const istYmdForLists = istToday();
+  const pastByApi = selectedDate < todayIST;
+  const pastByUrl = dateParam < istYmdForLists;
+  const showListSection =
+    !loading &&
+    !isFutureDate &&
+    (isAfterScanTime || pastByApi || pastByUrl);
 
   useEffect(() => {
     const token = localStorage.getItem("access_token");
@@ -83,6 +236,9 @@ const Breakout930: React.FC = () => {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setLiveLtp({});
+    setBreakoutSort({ col: "symbol", dir: "asc" });
+    setBreakdownSort({ col: "symbol", dir: "asc" });
 
     const q = new URLSearchParams();
     q.set("date", dateParam);
@@ -133,6 +289,78 @@ const Breakout930: React.FC = () => {
     };
   }, [dateParam]);
 
+  /** Live LTP for symbols shown in breakout/breakdown tables (Kite quote poll). */
+  useEffect(() => {
+    if (!showListSection) return;
+    if (!listSymbolKey) return;
+    const symbols = listSymbolKey.split(",").filter(Boolean);
+    if (symbols.length === 0) return;
+
+    let cancelled = false;
+
+    async function fetchQuotes() {
+      if (typeof document !== "undefined" && document.hidden) return;
+      try {
+        const qs = symbols
+          .map((s) => `i=${encodeURIComponent(`NSE:${s}`)}`)
+          .join("&");
+        const res = await API.get<KiteQuoteEnvelope>(`/api/kite/quote?${qs}`);
+        if (cancelled) return;
+        const data = res.data?.data ?? {};
+        const next: Record<string, number> = {};
+        for (const sym of symbols) {
+          const row = data[`NSE:${sym}`];
+          const lp = parseFloat(String(row?.last_price ?? ""));
+          if (Number.isFinite(lp)) next[sym] = lp;
+        }
+        if (Object.keys(next).length > 0) {
+          setLiveLtp((prev) => ({ ...prev, ...next }));
+        }
+      } catch {
+        /* keep last known LTP */
+      }
+    }
+
+    void fetchQuotes();
+    const intervalMs = 4000;
+    const timer = window.setInterval(fetchQuotes, intervalMs);
+    const onVis = () => {
+      if (!document.hidden) void fetchQuotes();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [listSymbolKey, showListSection]);
+
+  const sortedBreakoutRows = useMemo(
+    () => sortBreakoutRows(breakoutRows, breakoutSort.col, breakoutSort.dir, liveLtp),
+    [breakoutRows, breakoutSort.col, breakoutSort.dir, liveLtp]
+  );
+
+  const sortedBreakdownRows = useMemo(
+    () => sortBreakdownRows(breakdownRows, breakdownSort.col, breakdownSort.dir, liveLtp),
+    [breakdownRows, breakdownSort.col, breakdownSort.dir, liveLtp]
+  );
+
+  function toggleBreakoutSort(col: SortCol) {
+    setBreakoutSort((s) =>
+      s.col === col
+        ? { col, dir: s.dir === "asc" ? "desc" : "asc" }
+        : { col, dir: "asc" }
+    );
+  }
+
+  function toggleBreakdownSort(col: SortCol) {
+    setBreakdownSort((s) =>
+      s.col === col
+        ? { col, dir: s.dir === "asc" ? "desc" : "asc" }
+        : { col, dir: "asc" }
+    );
+  }
+
   function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
@@ -148,6 +376,12 @@ const Breakout930: React.FC = () => {
         </div>
       </div>
     );
+  }
+
+  function displayLtp(symbol: string, scanPrice: number): string {
+    const live = liveLtp[symbol];
+    if (live != null && Number.isFinite(live)) return formatAmount(live);
+    return formatAmount(scanPrice);
   }
 
   return (
@@ -205,7 +439,7 @@ const Breakout930: React.FC = () => {
           </div>
         )}
 
-        {!isAfterScanTime ? (
+        {!showListSection ? (
           <div className="nifty-card nifty-warning">
             {isFutureDate ? (
               <>
@@ -214,10 +448,10 @@ const Breakout930: React.FC = () => {
               </>
             ) : (
               <>
-                For <strong>today</strong> ({todayIST}), the scan runs after{" "}
-                <strong>09:35 AM IST</strong> once the 09:30 5-minute candle has
-                finished. Choose a <strong>past date</strong> to load breakout /
-                breakdown lists anytime.
+                <strong>Today only ({todayIST}):</strong> wait until{" "}
+                <strong>09:35 AM IST</strong> so the 09:30 five-minute candle is
+                complete. <strong>Past dates</strong> load anytime — pick one
+                above and press <strong>Run Scan</strong>.
               </>
             )}
           </div>
@@ -230,26 +464,57 @@ const Breakout930: React.FC = () => {
             </div>
 
             <div className="nifty-card nifty-card-table">
-              <h3 className="nifty-muted" style={{ margin: "0 0 8px" }}>
+              <h3 className="nifty-list-heading nifty-list-heading--breakout">
                 Breakout list
               </h3>
               <table className="nifty-table">
                 <thead>
                   <tr>
-                    <th>Symbol</th>
-                    <th>High 09:15</th>
-                    <th>Low 09:30</th>
-                    <th>LTP / ref</th>
-                    <th>vs 09:15 high</th>
+                    <ScanSortTh
+                      column="symbol"
+                      label="Symbol"
+                      sort={breakoutSort}
+                      onSort={toggleBreakoutSort}
+                    />
+                    <ScanSortTh
+                      column="high_915"
+                      label="High 09:15"
+                      sort={breakoutSort}
+                      onSort={toggleBreakoutSort}
+                    />
+                    <ScanSortTh
+                      column="low_930"
+                      label="Low 09:30"
+                      sort={breakoutSort}
+                      onSort={toggleBreakoutSort}
+                    />
+                    <ScanSortTh
+                      column="scan_ref"
+                      label="Scan ref"
+                      sort={breakoutSort}
+                      onSort={toggleBreakoutSort}
+                    />
+                    <ScanSortTh
+                      column="vs"
+                      label="vs 09:15 high"
+                      sort={breakoutSort}
+                      onSort={toggleBreakoutSort}
+                    />
+                    <ScanSortTh
+                      column="ltp"
+                      label="LTP"
+                      sort={breakoutSort}
+                      onSort={toggleBreakoutSort}
+                    />
                   </tr>
                 </thead>
                 <tbody>
                   {breakoutRows.length === 0 ? (
                     <tr>
-                      <td colSpan={5}>No stocks above the 09:15 high.</td>
+                      <td colSpan={6}>No stocks above the 09:15 high.</td>
                     </tr>
                   ) : (
-                    breakoutRows.map((row) => (
+                    sortedBreakoutRows.map((row) => (
                       <tr key={`b-${row.symbol}`}>
                         <td>
                           <Link
@@ -266,11 +531,14 @@ const Breakout930: React.FC = () => {
                         <td>
                           {formatAmount(row.latest_price)}
                           <span className="nifty-muted" style={{ marginLeft: 6 }}>
-                            ({row.price_source === "ltp" ? "LTP" : "last 5m close"})
+                            ({row.price_source === "ltp" ? "at scan" : "last 5m close"})
                           </span>
                         </td>
                         <td className="nifty-positive">
                           +{formatAmount(row.vs_high_915 ?? 0)}
+                        </td>
+                        <td className="nifty-ltp-live">
+                          {displayLtp(row.symbol, row.latest_price)}
                         </td>
                       </tr>
                     ))
@@ -280,26 +548,57 @@ const Breakout930: React.FC = () => {
             </div>
 
             <div className="nifty-card nifty-card-table">
-              <h3 className="nifty-muted" style={{ margin: "0 0 8px" }}>
+              <h3 className="nifty-list-heading nifty-list-heading--breakdown">
                 Breakdown list
               </h3>
               <table className="nifty-table">
                 <thead>
                   <tr>
-                    <th>Symbol</th>
-                    <th>High 09:15</th>
-                    <th>Low 09:30</th>
-                    <th>LTP / ref</th>
-                    <th>vs 09:30 low</th>
+                    <ScanSortTh
+                      column="symbol"
+                      label="Symbol"
+                      sort={breakdownSort}
+                      onSort={toggleBreakdownSort}
+                    />
+                    <ScanSortTh
+                      column="high_915"
+                      label="High 09:15"
+                      sort={breakdownSort}
+                      onSort={toggleBreakdownSort}
+                    />
+                    <ScanSortTh
+                      column="low_930"
+                      label="Low 09:30"
+                      sort={breakdownSort}
+                      onSort={toggleBreakdownSort}
+                    />
+                    <ScanSortTh
+                      column="scan_ref"
+                      label="Scan ref"
+                      sort={breakdownSort}
+                      onSort={toggleBreakdownSort}
+                    />
+                    <ScanSortTh
+                      column="vs"
+                      label="vs 09:30 low"
+                      sort={breakdownSort}
+                      onSort={toggleBreakdownSort}
+                    />
+                    <ScanSortTh
+                      column="ltp"
+                      label="LTP"
+                      sort={breakdownSort}
+                      onSort={toggleBreakdownSort}
+                    />
                   </tr>
                 </thead>
                 <tbody>
                   {breakdownRows.length === 0 ? (
                     <tr>
-                      <td colSpan={5}>No stocks below the 09:30 low.</td>
+                      <td colSpan={6}>No stocks below the 09:30 low.</td>
                     </tr>
                   ) : (
-                    breakdownRows.map((row) => (
+                    sortedBreakdownRows.map((row) => (
                       <tr key={`d-${row.symbol}`}>
                         <td>
                           <Link
@@ -316,11 +615,14 @@ const Breakout930: React.FC = () => {
                         <td>
                           {formatAmount(row.latest_price)}
                           <span className="nifty-muted" style={{ marginLeft: 6 }}>
-                            ({row.price_source === "ltp" ? "LTP" : "last 5m close"})
+                            ({row.price_source === "ltp" ? "at scan" : "last 5m close"})
                           </span>
                         </td>
                         <td style={{ color: "#b91c1c", fontWeight: 600 }}>
                           {formatAmount(row.vs_low_930 ?? 0)}
+                        </td>
+                        <td className="nifty-ltp-live">
+                          {displayLtp(row.symbol, row.latest_price)}
                         </td>
                       </tr>
                     ))

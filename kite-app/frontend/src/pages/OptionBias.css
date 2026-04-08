@@ -1,0 +1,143 @@
+.ob-controls {
+  margin-top: 10px;
+}
+
+.ob-select {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 6px 10px;
+  margin-left: 6px;
+  font-size: 13px;
+  background: #fff;
+}
+
+.ob-error {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #991b1b;
+}
+
+.ob-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px 20px;
+}
+
+.ob-muted {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6b7280;
+  margin-bottom: 2px;
+}
+
+.ob-big {
+  font-size: 1.35rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.ob-bias--bullish {
+  color: #15803d;
+}
+
+.ob-bias--bearish {
+  color: #b91c1c;
+}
+
+.ob-bias--neutral {
+  color: #4b5563;
+}
+
+.ob-tables {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+
+@media (min-width: 960px) {
+  .ob-tables {
+    grid-template-columns: 1fr 1fr;
+    align-items: start;
+  }
+}
+
+.ob-heading-ce {
+  color: #15803d;
+}
+
+.ob-heading-pe {
+  color: #b91c1c;
+}
+
+.ob-table {
+  font-size: 13px;
+}
+
+.ob-mono {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.ob-ind {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.ob-ind--buy {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.ob-ind--sell {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.ob-ind--wait {
+  background: #f3f4f6;
+  color: #4b5563;
+}
+
+.ob-live-status {
+  margin: 8px 0 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  max-width: 720px;
+}
+
+.ob-live-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #22c55e;
+  animation: ob-pulse 2s ease-in-out infinite;
+}
+
+.ob-live-dot--idle {
+  background: #9ca3af;
+  animation: none;
+}
+
+@keyframes ob-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.ob-page--refreshing .ob-tables {
+  opacity: 0.93;
+  transition: opacity 0.12s ease;
+}

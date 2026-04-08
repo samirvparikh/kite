@@ -6,6 +6,7 @@ import Dashboard from "./pages/Dashboard";
 import Scanner from "./pages/Scanner";
 import Nifty921 from "./pages/Nifty921";
 import Breakout930 from "./pages/Breakout930";
+import OptionBias from "./pages/OptionBias";
 import Chart from "./pages/Chart";
 import Positions from "./pages/Positions";
 import AppLayout from "./layouts/AppLayout";
@@ -24,6 +25,7 @@ const App: React.FC = () => {
           <Route path="/scanner" element={<Scanner />} />
           <Route path="/nifty50-921" element={<Nifty921 />} />
           <Route path="/nifty50-930-breakout" element={<Breakout930 />} />
+          <Route path="/nifty-option-bias" element={<OptionBias />} />
         </Route>
       </Routes>
     </BrowserRouter>

@@ -4,6 +4,11 @@ const express = require('express');
 const axios = require('axios');
 require('dotenv').config();
 const cors = require('cors');
+const {
+    loadNiftyNfoOptionIndex,
+    pickExpiry,
+    strikesWindow,
+} = require('./niftyOptionsIndex');
 
 const app = express();
 app.use(cors());
@@ -26,10 +31,11 @@ app.get('/api', (req, res) => {
             'GET /api/kite/user/margins',
             'GET /api/kite/portfolio/holdings',
             'GET /api/kite/portfolio/positions',
-            'GET /api/market/nifty50-scanner?date=YYYY-MM-DD&type=sector|top-gainers|top-losers|5min-breakout',
+            'GET /api/market/nifty50-scanner?date=YYYY-MM-DD&type=sector|top-gainers|top-losers|5min-breakout (first 5m H/L both sides broken)',
             'GET /api/kite/quote?i=NSE:INFY&i=...',
             'GET /api/scan/nifty50-921?date=YYYY-MM-DD',
             'GET /api/scan/nifty50-930-breakout?date=YYYY-MM-DD',
+            'GET /api/scan/nifty-option-bias?wings=5&expiry=YYYY-MM-DD (optional)',
         ],
         auth: 'Send header: Authorization: Bearer <access_token> (except /login, /callback)',
     });
@@ -247,6 +253,44 @@ function get5MinuteBarAt(candles, time) {
     return null;
 }
 
+/** Index of the 5m candle that opens at 09:15 IST (first regular session bar). */
+function indexOfOpening915Bar(candles) {
+    if (!Array.isArray(candles)) return -1;
+    const wantMin = 9 * 60 + 15;
+    for (let i = 0; i < candles.length; i++) {
+        const mod = istMinuteOfDayFromStamp(candles[i][0]);
+        if (mod === wantMin) return i;
+    }
+    return -1;
+}
+
+/**
+ * After the first 5m bar, session range (subsequent bars ± today's LTP) must
+ * have traded strictly above `firstHigh` and strictly below `firstLow`.
+ */
+function sessionBrokeBothSidesOfFirst5m(
+    candles,
+    firstBarIndex,
+    firstHigh,
+    firstLow,
+    mergeLtp
+) {
+    let maxH = -Infinity;
+    let minL = Infinity;
+    for (let i = firstBarIndex + 1; i < candles.length; i++) {
+        const o = ohlcFromCandleRow(candles[i]);
+        if (!o) continue;
+        maxH = Math.max(maxH, o.high);
+        minL = Math.min(minL, o.low);
+    }
+    if (mergeLtp != null && Number.isFinite(mergeLtp)) {
+        maxH = Math.max(maxH, mergeLtp);
+        minL = Math.min(minL, mergeLtp);
+    }
+    if (!Number.isFinite(maxH) || !Number.isFinite(minL)) return false;
+    return maxH > firstHigh && minL < firstLow;
+}
+
 const NIFTY50_SYMBOLS = [
     'ADANIENT', 'ADANIPORTS', 'APOLLOHOSP', 'ASIANPAINT', 'AXISBANK',
     'BAJAJ-AUTO', 'BAJFINANCE', 'BAJAJFINSV', 'BEL', 'BHARTIARTL',
@@ -407,9 +451,10 @@ async function buildNifty50MarketRows(accessToken, selectedDate) {
                 last_price: m.last_price,
                 change_pct: m.change_pct,
                 change_rs: m.change_rs,
+                sector: NIFTY50_SECTOR[symbol] ?? 'Others',
             });
         }
-        return { source: 'quote', rows };
+        return { source: 'quote', rows, quoteMap };
     }
 
     const prev = prevWeekdayIso(selectedDate);
@@ -439,6 +484,7 @@ async function buildNifty50MarketRows(accessToken, selectedDate) {
                         last_price: m.last_price,
                         change_pct: m.change_pct,
                         change_rs: m.change_rs,
+                        sector: NIFTY50_SECTOR[symbol] ?? 'Others',
                     });
                 } catch (e) {
                     console.error(symbol, e.message);
@@ -447,7 +493,7 @@ async function buildNifty50MarketRows(accessToken, selectedDate) {
         );
     }
 
-    return { source: 'historical', rows };
+    return { source: 'historical', rows, quoteMap };
 }
 
 function aggregateSectorRows(marketRows) {
@@ -495,10 +541,8 @@ marketRouter.get('/nifty50-scanner', async (req, res) => {
     const type = String(req.query.type ?? 'top-gainers');
 
     try {
-        const { source, rows: marketRows } = await buildNifty50MarketRows(
-            accessToken,
-            selectedDate
-        );
+        const { source, rows: marketRows, quoteMap } =
+            await buildNifty50MarketRows(accessToken, selectedDate);
 
         if (type === 'sector') {
             const sectorRows = aggregateSectorRows(marketRows);
@@ -506,7 +550,7 @@ marketRouter.get('/nifty50-scanner', async (req, res) => {
                 date: selectedDate,
                 source,
                 sectorRows,
-                stockRows: [],
+                stockRows: marketRows,
             });
         }
 
@@ -516,9 +560,57 @@ marketRouter.get('/nifty50-scanner', async (req, res) => {
         } else if (type === 'top-losers') {
             stockRows.sort((a, b) => a.change_pct - b.change_pct);
         } else if (type === '5min-breakout') {
+            const isTodayBreakout = selectedDate === todayIST;
+            const bySymbol = new Map(marketRows.map((r) => [r.symbol, r]));
+            const passed = new Set();
+
+            async function run5minBreakoutSymbol(symbol) {
+                const key = `NSE:${symbol}`;
+                const instrumentToken = quoteMap[key]?.instrument_token;
+                if (instrumentToken == null || instrumentToken === '') return;
+
+                let candles;
+                try {
+                    candles = await fetchKite5MinuteCandlesForDay(
+                        accessToken,
+                        instrumentToken,
+                        selectedDate
+                    );
+                } catch {
+                    return;
+                }
+                if (!candles.length) return;
+
+                const idx915 = indexOfOpening915Bar(candles);
+                if (idx915 < 0) return;
+                const bar915 = ohlcFromCandleRow(candles[idx915]);
+                if (!bar915) return;
+
+                let mergeLtp = null;
+                if (isTodayBreakout) {
+                    mergeLtp = parseFloat(quoteMap[key]?.last_price ?? '');
+                    if (!Number.isFinite(mergeLtp)) mergeLtp = null;
+                }
+
+                const ok = sessionBrokeBothSidesOfFirst5m(
+                    candles,
+                    idx915,
+                    bar915.high,
+                    bar915.low,
+                    mergeLtp
+                );
+                if (ok && bySymbol.has(symbol)) passed.add(symbol);
+            }
+
+            const conc = 8;
+            for (let i = 0; i < NIFTY50_SYMBOLS.length; i += conc) {
+                const batch = NIFTY50_SYMBOLS.slice(i, i + conc);
+                await Promise.all(batch.map((s) => run5minBreakoutSymbol(s)));
+            }
+
+            stockRows = marketRows.filter((r) => passed.has(r.symbol));
             stockRows.sort(
-                (a, b) =>
-                    Math.abs(b.change_pct) - Math.abs(a.change_pct)
+                (a, b) => Math.abs(b.change_pct) - Math.abs(a.change_pct)
             );
         }
 
@@ -921,6 +1013,239 @@ app.get('/api/scan/nifty50-930-breakout', async (req, res) => {
         breakdownRows,
         errorRows,
         totalSymbols: NIFTY50_SYMBOLS.length,
+    });
+});
+
+/**
+ * NIFTY index options (nearest / chosen expiry): ATM ± wings, CE & PE quotes,
+ * simple directional bias from spot vs 09:15 5m bar or % change → Buy/Sell/Wait hints.
+ */
+app.get('/api/scan/nifty-option-bias', async (req, res) => {
+    const accessToken = getBearerToken(req);
+    if (!accessToken) {
+        return res.status(401).json({ error: 'Missing access token' });
+    }
+    if (!API_KEY) {
+        return res.status(500).json({ error: 'API_KEY not configured' });
+    }
+
+    const headers = {
+        'X-Kite-Version': '3',
+        Authorization: `token ${API_KEY}:${accessToken}`,
+    };
+
+    const todayIST = istDateString();
+    const wingsRaw = parseInt(String(req.query.wings ?? '5'), 10);
+    const wings = Number.isFinite(wingsRaw)
+        ? Math.min(12, Math.max(1, wingsRaw))
+        : 5;
+    const expiryOverride = normalizeCalendarYmd(
+        typeof req.query.expiry === 'string' ? req.query.expiry : ''
+    );
+
+    let byExpiry;
+    try {
+        byExpiry = await loadNiftyNfoOptionIndex();
+    } catch (e) {
+        console.error(e.response?.data || e.message);
+        return res.status(502).json({
+            error: 'Failed to load instruments',
+            detail: e.message,
+        });
+    }
+
+    let availableExpiries = [...byExpiry.keys()]
+        .filter((k) => k >= todayIST)
+        .sort()
+        .slice(0, 20);
+
+    const expiry = pickExpiry(byExpiry, expiryOverride || '', todayIST);
+    if (!expiry) {
+        return res.status(502).json({ error: 'No NIFTY option expiries in index' });
+    }
+    if (!availableExpiries.includes(expiry)) {
+        availableExpiries = [...availableExpiries, expiry].sort().slice(0, 20);
+    }
+
+    const strikeMap = byExpiry.get(expiry);
+    if (!strikeMap?.size) {
+        return res.status(502).json({ error: 'Empty strike map for expiry' });
+    }
+
+    const idxKey = 'NSE:NIFTY 50';
+    let quoteIdx;
+    try {
+        const quoteRes = await axios.get(
+            `https://api.kite.trade/quote?i=${encodeURIComponent(idxKey)}`,
+            { headers }
+        );
+        quoteIdx = quoteRes.data?.data?.[idxKey];
+    } catch (error) {
+        console.error(error.response?.data || error.message);
+        return res.status(error.response?.status || 502).json(
+            error.response?.data || { error: error.message }
+        );
+    }
+
+    const niftyLtp = parseFloat(quoteIdx?.last_price ?? NaN);
+    const niftyCh = parseFloat(
+        quoteIdx?.change ?? quoteIdx?.net_change ?? NaN
+    );
+    const indexToken = quoteIdx?.instrument_token;
+
+    if (!Number.isFinite(niftyLtp)) {
+        return res.status(502).json({ error: 'NIFTY 50 LTP unavailable' });
+    }
+
+    const prevClose =
+        Number.isFinite(niftyCh) && Number.isFinite(niftyLtp)
+            ? niftyLtp - niftyCh
+            : niftyLtp;
+    const changePct =
+        prevClose !== 0 && Number.isFinite(prevClose) && Number.isFinite(niftyCh)
+            ? (niftyCh / prevClose) * 100
+            : null;
+
+    const atm = Math.round(niftyLtp / 50) * 50;
+    const strikes = strikesWindow(strikeMap, atm, wings);
+
+    let bias = 'neutral';
+    let biasDetail = '';
+
+    if (indexToken != null && indexToken !== '') {
+        try {
+            const candles = await fetchKite5MinuteCandlesForDay(
+                accessToken,
+                indexToken,
+                todayIST
+            );
+            const bar915 = get5MinuteBarAt(candles, '09:15:00');
+            if (bar915) {
+                if (niftyLtp > bar915.high) {
+                    bias = 'bullish';
+                    biasDetail = 'Spot above first 5m (09:15) high.';
+                } else if (niftyLtp < bar915.low) {
+                    bias = 'bearish';
+                    biasDetail = 'Spot below first 5m (09:15) low.';
+                } else {
+                    bias = 'neutral';
+                    biasDetail = 'Spot inside first 5m (09:15) range — either side possible.';
+                }
+            }
+        } catch (_) {
+            /* fall through to % change */
+        }
+    }
+
+    if (!biasDetail) {
+        if (changePct != null && changePct > 0.05) {
+            bias = 'bullish';
+            biasDetail = 'Index up vs prev. close (5m context unavailable).';
+        } else if (changePct != null && changePct < -0.05) {
+            bias = 'bearish';
+            biasDetail = 'Index down vs prev. close (5m context unavailable).';
+        } else {
+            bias = 'neutral';
+            biasDetail =
+                changePct != null
+                    ? 'Flat vs prev. close — watch both call and put sides.'
+                    : 'Bias neutral — watch both sides.';
+        }
+    }
+
+    if (!strikes.length) {
+        return res.json({
+            expiry,
+            availableExpiries,
+            todayIST,
+            niftyLtp,
+            niftyChange: Number.isFinite(niftyCh) ? niftyCh : null,
+            changePct,
+            atm,
+            bias,
+            biasDetail,
+            calls: [],
+            puts: [],
+        });
+    }
+
+    const instKeys = [];
+    for (const s of strikes) {
+        const c = strikeMap.get(s);
+        instKeys.push(`NFO:${c.ce.tradingsymbol}`);
+        instKeys.push(`NFO:${c.pe.tradingsymbol}`);
+    }
+    const qUrl = `https://api.kite.trade/quote?${instKeys
+        .map((k) => `i=${encodeURIComponent(k)}`)
+        .join('&')}`;
+
+    let qd = {};
+    try {
+        const oq = await axios.get(qUrl, { headers });
+        qd = oq.data?.data ?? {};
+    } catch (error) {
+        console.error(error.response?.data || error.message);
+        return res.status(error.response?.status || 502).json(
+            error.response?.data || { error: error.message }
+        );
+    }
+
+    function optRow(side, strike, instr, o) {
+        const lp = parseFloat(o?.last_price ?? NaN);
+        const oi = parseFloat(o?.oi ?? NaN);
+        const vol = parseFloat(o?.volume ?? NaN);
+        let indicator = 'Wait';
+        let indicatorSide = 'neutral';
+        if (side === 'call') {
+            if (bias === 'bullish') {
+                indicator = 'Buy';
+                indicatorSide = 'buy';
+            } else if (bias === 'bearish') {
+                indicator = 'Sell';
+                indicatorSide = 'sell';
+            }
+        } else {
+            if (bias === 'bearish') {
+                indicator = 'Buy';
+                indicatorSide = 'buy';
+            } else if (bias === 'bullish') {
+                indicator = 'Sell';
+                indicatorSide = 'sell';
+            }
+        }
+        return {
+            strike,
+            tradingsymbol: instr.tradingsymbol,
+            ltp: Number.isFinite(lp) ? lp : null,
+            oi: Number.isFinite(oi) ? oi : null,
+            volume: Number.isFinite(vol) ? vol : null,
+            indicator,
+            indicatorSide,
+        };
+    }
+
+    const calls = [];
+    const puts = [];
+    for (const s of strikes) {
+        const c = strikeMap.get(s);
+        const ck = `NFO:${c.ce.tradingsymbol}`;
+        const pk = `NFO:${c.pe.tradingsymbol}`;
+        calls.push(optRow('call', s, c.ce, qd[ck]));
+        puts.push(optRow('put', s, c.pe, qd[pk]));
+    }
+
+    return res.json({
+        expiry,
+        availableExpiries,
+        todayIST,
+        niftyLtp,
+        niftyChange: Number.isFinite(niftyCh) ? niftyCh : null,
+        changePct,
+        atm,
+        bias,
+        biasDetail,
+        calls,
+        puts,
     });
 });
 

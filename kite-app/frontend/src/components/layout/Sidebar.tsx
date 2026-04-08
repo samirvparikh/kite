@@ -26,6 +26,7 @@ export const Sidebar: React.FC<Props> = ({ open, onClose }) => {
   const pos = pathname === "/positions";
   const nifty = pathname === "/nifty50-921";
   const breakout930 = pathname === "/nifty50-930-breakout";
+  const optionBias = pathname === "/nifty-option-bias";
   const scan = pathname === "/scanner";
 
   const Item = ({
@@ -141,6 +142,13 @@ export const Sidebar: React.FC<Props> = ({ open, onClose }) => {
         >
           9:30 Breakout
         </Item>
+        <Item
+          to={`/nifty-option-bias?date=${d}`}
+          active={optionBias}
+          icon={<IconSplit />}
+        >
+          CE / PE bias
+        </Item>
       </nav>
 
       <div className="border-t border-slate-100 p-3 text-center text-xs text-slate-400">
@@ -219,6 +227,14 @@ function IconTrendDown() {
   return (
     <svg className="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 6 9 12.75l4.286-4.286a11.948 11.948 0 0 1 4.306 6.43l.776 2.898m0 0 3.182-5.511m-3.182 5.51-5.511-3.181" />
+    </svg>
+  );
+}
+
+function IconSplit() {
+  return (
+    <svg className="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 21 3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5V3" />
     </svg>
   );
 }
