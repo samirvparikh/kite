@@ -69,7 +69,7 @@ export const Header: React.FC<Props> = ({ onMenuClick }) => {
     if (
       location.pathname === "/dashboard" ||
       location.pathname === "/positions" ||
-      location.pathname === "/nifty50-921" ||
+      location.pathname === "/nifty50-920-breakout" ||
       location.pathname === "/nifty50-930-breakout" ||
       location.pathname === "/nifty-option-bias"
     ) {

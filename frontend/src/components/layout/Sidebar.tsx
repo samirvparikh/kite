@@ -24,7 +24,7 @@ export const Sidebar: React.FC<Props> = ({ open, onClose }) => {
 
   const dash = pathname === "/dashboard";
   const pos = pathname === "/positions";
-  const nifty = pathname === "/nifty50-921";
+  const nifty = pathname === "/nifty50-920-breakout";
   const breakout930 = pathname === "/nifty50-930-breakout";
   const optionBias = pathname === "/nifty-option-bias";
   const scan = pathname === "/scanner";
@@ -129,11 +129,11 @@ export const Sidebar: React.FC<Props> = ({ open, onClose }) => {
           5 Min Breakout
         </Item>
         <Item
-          to={`/nifty50-921?date=${d}`}
+          to={`/nifty50-920-breakout?date=${d}`}
           active={nifty}
           icon={<IconClock />}
         >
-          NIFTY50 9:21 Scan
+          9:20 Breakout
         </Item>
         <Item
           to={`/nifty50-930-breakout?date=${d}`}

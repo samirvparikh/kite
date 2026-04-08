@@ -33,7 +33,7 @@ app.get('/api', (req, res) => {
             'GET /api/kite/portfolio/positions',
             'GET /api/market/nifty50-scanner?date=YYYY-MM-DD&type=sector|top-gainers|top-losers|5min-breakout (first 5m H/L both sides broken)',
             'GET /api/kite/quote?i=NSE:INFY&i=...',
-            'GET /api/scan/nifty50-921?date=YYYY-MM-DD',
+            'GET /api/scan/nifty50-920-breakout?date=YYYY-MM-DD',
             'GET /api/scan/nifty50-930-breakout?date=YYYY-MM-DD',
             'GET /api/scan/nifty-option-bias?wings=5&expiry=YYYY-MM-DD (optional)',
         ],
@@ -383,6 +383,129 @@ function findDayCandle(candles, ymd) {
     );
 }
 
+function ymdToDmy(ymd) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd ?? ''));
+    if (!m) return '';
+    return `${m[3]}-${m[2]}-${m[1]}`;
+}
+
+function normalizeCaText(raw) {
+    const s = String(raw ?? '').trim();
+    if (!s) return '-';
+    const u = s.toUpperCase();
+    if (u.includes('DIVIDEND')) return 'DIV';
+    if (u.includes('BONUS')) return 'BONUS';
+    if (u.includes('SPLIT')) return 'SPLIT';
+    if (u.includes('RIGHT')) return 'RIGHTS';
+    return s.length > 20 ? `${s.slice(0, 20)}…` : s;
+}
+
+async function fetchNseCorporateActionsBySymbol(selectedDate, symbols) {
+    const out = new Map();
+    if (!Array.isArray(symbols) || symbols.length === 0) return out;
+    const dmy = ymdToDmy(selectedDate);
+    if (!dmy) return out;
+
+    try {
+        const home = await axios.get('https://www.nseindia.com', {
+            headers: {
+                'User-Agent':
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            },
+        });
+        const rawCookies = home.headers?.['set-cookie'];
+        const cookieHeader = Array.isArray(rawCookies)
+            ? rawCookies.map((c) => c.split(';')[0]).join('; ')
+            : '';
+
+        const apiUrl = `https://www.nseindia.com/api/corporates-corporateActions?index=equities&from_date=${encodeURIComponent(
+            dmy
+        )}&to_date=${encodeURIComponent(dmy)}`;
+        const caRes = await axios.get(apiUrl, {
+            headers: {
+                'User-Agent':
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                Accept: 'application/json, text/plain, */*',
+                Referer: 'https://www.nseindia.com/companies-listing/corporate-filings-actions',
+                Cookie: cookieHeader,
+            },
+        });
+
+        const rows = Array.isArray(caRes.data) ? caRes.data : caRes.data?.data;
+        if (!Array.isArray(rows)) return out;
+
+        const symbolSet = new Set(symbols);
+        for (const r of rows) {
+            const sym = String(r?.symbol ?? r?.sm_name ?? '').trim().toUpperCase();
+            if (!sym || !symbolSet.has(sym)) continue;
+            const purpose =
+                r?.purpose ??
+                r?.subject ??
+                r?.desc ??
+                r?.series ??
+                '';
+            out.set(sym, normalizeCaText(purpose));
+        }
+        return out;
+    } catch {
+        return out;
+    }
+}
+
+function timePartFromCandleStamp(stamp) {
+    const s = String(stamp ?? '');
+    const tPos = s.indexOf('T');
+    if (tPos >= 0 && s.length >= tPos + 9) return s.slice(tPos + 1, tPos + 9);
+    if (s.length >= 19 && s[10] === ' ') return s.slice(11, 19);
+    if (s.length >= 8) return s.slice(-8);
+    return '';
+}
+
+function barsBetweenTimeInclusive(candles, fromTime, toTime) {
+    if (!Array.isArray(candles)) return [];
+    return candles.filter((c) => {
+        const t = timePartFromCandleStamp(c?.[0]);
+        return t >= fromTime && t <= toTime;
+    });
+}
+
+function calcSessionOhlcvFrom5m(candles) {
+    if (!Array.isArray(candles) || candles.length === 0) return null;
+    let high = Number.NEGATIVE_INFINITY;
+    let low = Number.POSITIVE_INFINITY;
+    let volume = 0;
+    const open = parseFloat(candles[0]?.[1] ?? NaN);
+    for (const c of candles) {
+        const h = parseFloat(c?.[2] ?? NaN);
+        const l = parseFloat(c?.[3] ?? NaN);
+        const v = parseFloat(c?.[5] ?? NaN);
+        if (Number.isFinite(h) && h > high) high = h;
+        if (Number.isFinite(l) && l < low) low = l;
+        if (Number.isFinite(v)) volume += v;
+    }
+    if (!Number.isFinite(open) || !Number.isFinite(high) || !Number.isFinite(low)) {
+        return null;
+    }
+    return { open, high, low, volume: Math.round(volume) };
+}
+
+async function fetchPrevCloseForDay(accessToken, instrumentToken, selectedDate) {
+    const prev = prevWeekdayIso(selectedDate);
+    const path = `instruments/historical/${instrumentToken}/day?from=${encodeURIComponent(prev)}&to=${encodeURIComponent(selectedDate)}`;
+    const histRes = await axios.get(`https://api.kite.trade/${path}`, {
+        headers: {
+            'X-Kite-Version': '3',
+            Authorization: `token ${API_KEY}:${accessToken}`,
+        },
+    });
+    const candles = histRes.data?.data?.candles ?? [];
+    const cPrev = findDayCandle(candles, prev);
+    if (!cPrev) return null;
+    const closePrev = parseFloat(cPrev[4] ?? NaN);
+    return Number.isFinite(closePrev) ? closePrev : null;
+}
+
 function pctChangeFromQuotes(q) {
     const last = parseFloat(q.last_price ?? 0);
     const ch = parseFloat(q.change ?? q.net_change ?? 0);
@@ -534,10 +657,10 @@ marketRouter.get('/nifty50-scanner', async (req, res) => {
     }
 
     const todayIST = istDateString();
+    const rawQueryDate =
+        typeof req.query.date === 'string' ? req.query.date.trim() : '';
     const selectedDate =
-        typeof req.query.date === 'string' && req.query.date
-            ? req.query.date
-            : todayIST;
+        normalizeCalendarYmd(rawQueryDate) || todayIST;
     const type = String(req.query.type ?? 'top-gainers');
 
     try {
@@ -691,7 +814,7 @@ app.get('/api/kite/instruments/historical/:token/minute', async (req, res) => {
     }
 });
 
-app.get('/api/scan/nifty50-921', async (req, res) => {
+app.get('/api/scan/nifty50-920-breakout', async (req, res) => {
     const accessToken = getBearerToken(req);
     if (!accessToken) {
         return res.status(401).json({ error: 'Missing access token' });
@@ -701,10 +824,10 @@ app.get('/api/scan/nifty50-921', async (req, res) => {
     }
 
     const todayIST = istDateString();
+    const rawQueryDate =
+        typeof req.query.date === 'string' ? req.query.date.trim() : '';
     const selectedDate =
-        typeof req.query.date === 'string' && req.query.date
-            ? req.query.date
-            : todayIST;
+        normalizeCalendarYmd(rawQueryDate) || todayIST;
     const minutes = istMinutesSinceMidnight();
     const isAfterScanTime =
         selectedDate < todayIST ||
@@ -739,9 +862,10 @@ app.get('/api/scan/nifty50-921', async (req, res) => {
     }
 
     const from = `${selectedDate} 09:15:00`;
-    const to = `${selectedDate} 09:22:00`;
+    const to = `${selectedDate} 15:30:00`;
     const scanRows = [];
     const errorRows = [];
+    const isToday = selectedDate === todayIST;
 
     for (const symbol of NIFTY50_SYMBOLS) {
         const instrumentKey = `NSE:${symbol}`;
@@ -785,28 +909,65 @@ app.get('/api/scan/nifty50-921', async (req, res) => {
             continue;
         }
 
-        const close920 = getCandleValue(candles, '09:20:00', 4);
-        const open921 = getCandleValue(candles, '09:21:00', 1);
-
-        if (close920 === null || open921 === null) {
+        const rangeBars = candles.filter((c) => {
+            const t = String(c?.[0] ?? '').slice(11, 19);
+            return t >= '09:15:00' && t <= '09:20:00';
+        });
+        if (!rangeBars.length) {
             errorRows.push({
                 symbol,
-                reason: 'Missing 09:20 or 09:21 candle',
+                reason: 'Missing 09:15-09:20 candles',
+            });
+            continue;
+        }
+        const rangeHigh = Math.max(
+            ...rangeBars.map((c) => parseFloat(c?.[2] ?? Number.NEGATIVE_INFINITY))
+        );
+        const rangeLow = Math.min(
+            ...rangeBars.map((c) => parseFloat(c?.[3] ?? Number.POSITIVE_INFINITY))
+        );
+        if (!Number.isFinite(rangeHigh) || !Number.isFinite(rangeLow)) {
+            errorRows.push({
+                symbol,
+                reason: 'Invalid 09:15-09:20 high/low',
             });
             continue;
         }
 
-        if (close920 > open921) {
+        let latestPrice = NaN;
+        let priceSource = 'last_min_close';
+        if (isToday) {
+            latestPrice = parseFloat(quoteData[instrumentKey]?.last_price ?? NaN);
+            priceSource = 'ltp';
+        } else {
+            latestPrice = parseFloat(candles[candles.length - 1]?.[4] ?? NaN);
+        }
+        if (!Number.isFinite(latestPrice)) {
+            errorRows.push({
+                symbol,
+                reason: 'Invalid reference price',
+            });
+            continue;
+        }
+
+        if (latestPrice > rangeHigh || latestPrice < rangeLow) {
+            const side = latestPrice > rangeHigh ? 'breakout' : 'breakdown';
             scanRows.push({
                 symbol,
-                close_920: close920,
-                open_921: open921,
-                gap: close920 - open921,
+                high_920_range: rangeHigh,
+                low_920_range: rangeLow,
+                scan_ref: latestPrice,
+                side,
+                diff:
+                    side === 'breakout'
+                        ? latestPrice - rangeHigh
+                        : latestPrice - rangeLow,
+                price_source: priceSource,
             });
         }
     }
 
-    scanRows.sort((a, b) => b.gap - a.gap);
+    scanRows.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
 
     return res.json({
         isAfterScanTime: true,
@@ -892,6 +1053,10 @@ app.get('/api/scan/nifty50-930-breakout', async (req, res) => {
     const errorRows = [];
     const concurrency = 8;
     const isToday = selectedDate === todayIST;
+    const caBySymbol = await fetchNseCorporateActionsBySymbol(
+        selectedDate,
+        NIFTY50_SYMBOLS
+    );
 
     async function runSymbol(symbol) {
         const instrumentKey = `NSE:${symbol}`;
@@ -927,26 +1092,36 @@ app.get('/api/scan/nifty50-930-breakout', async (req, res) => {
             return;
         }
 
-        const bar915 = get5MinuteBarAt(candles, '09:15:00');
-        const bar930 = get5MinuteBarAt(candles, '09:30:00');
-
-        if (!bar915) {
+        const rangeBars = barsBetweenTimeInclusive(candles, '09:15:00', '09:30:00');
+        if (rangeBars.length === 0) {
             errorRows.push({
                 symbol,
-                reason: 'Missing 09:15 5-min bar',
+                reason: 'Missing 09:15-09:30 5-min bars',
             });
             return;
         }
-        if (!bar930) {
+        const rangeHigh = Math.max(
+            ...rangeBars.map((c) => parseFloat(c?.[2] ?? Number.NEGATIVE_INFINITY))
+        );
+        const rangeLow = Math.min(
+            ...rangeBars.map((c) => parseFloat(c?.[3] ?? Number.POSITIVE_INFINITY))
+        );
+        if (!Number.isFinite(rangeHigh) || !Number.isFinite(rangeLow)) {
             errorRows.push({
                 symbol,
-                reason: 'Missing 09:30 5-min bar',
+                reason: 'Invalid 09:15-09:30 high/low',
             });
             return;
         }
 
-        const high_915 = bar915.high;
-        const low_930 = bar930.low;
+        const sessionOhlcv = calcSessionOhlcvFrom5m(candles);
+        if (!sessionOhlcv) {
+            errorRows.push({
+                symbol,
+                reason: 'Invalid session OHLC/volume',
+            });
+            return;
+        }
 
         let latest_price;
         let priceSource;
@@ -974,24 +1149,59 @@ app.get('/api/scan/nifty50-930-breakout', async (req, res) => {
             }
         }
 
+        let prevClose = null;
+        if (isToday) {
+            const qrow = quoteData[instrumentKey] ?? {};
+            const qClose = parseFloat(qrow?.ohlc?.close ?? NaN);
+            if (Number.isFinite(qClose)) prevClose = qClose;
+        } else {
+            try {
+                prevClose = await fetchPrevCloseForDay(
+                    accessToken,
+                    instrumentToken,
+                    selectedDate
+                );
+            } catch {
+                prevClose = null;
+            }
+        }
+
+        const changePct =
+            Number.isFinite(prevClose) && prevClose !== 0
+                ? ((latest_price - prevClose) / prevClose) * 100
+                : null;
+        const valueLakhs =
+            Number.isFinite(sessionOhlcv.volume) && Number.isFinite(latest_price)
+                ? (sessionOhlcv.volume * latest_price) / 100000
+                : null;
+
         const base = {
             symbol,
-            high_915,
-            low_930,
+            high_915: rangeHigh,
+            low_930: rangeLow,
             latest_price,
             price_source: priceSource,
+            prev_close: prevClose,
+            open: sessionOhlcv.open,
+            high: sessionOhlcv.high,
+            low: sessionOhlcv.low,
+            volume_shares: sessionOhlcv.volume,
+            value_lakhs: valueLakhs,
+            ca: caBySymbol.get(symbol) ?? '-',
+            scan_ref: latest_price,
+            change_pct: changePct,
         };
 
-        if (latest_price > high_915) {
+        if (latest_price > rangeHigh) {
             breakoutRows.push({
                 ...base,
-                vs_high_915: latest_price - high_915,
+                vs_high_915: latest_price - rangeHigh,
             });
         }
-        if (latest_price < low_930) {
+        if (latest_price < rangeLow) {
             breakdownRows.push({
                 ...base,
-                vs_low_930: latest_price - low_930,
+                vs_low_930: latest_price - rangeLow,
             });
         }
     }

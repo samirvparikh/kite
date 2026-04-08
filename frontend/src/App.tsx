@@ -23,7 +23,7 @@ const App: React.FC = () => {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/positions" element={<Positions />} />
           <Route path="/scanner" element={<Scanner />} />
-          <Route path="/nifty50-921" element={<Nifty921 />} />
+          <Route path="/nifty50-920-breakout" element={<Nifty921 />} />
           <Route path="/nifty50-930-breakout" element={<Breakout930 />} />
           <Route path="/nifty-option-bias" element={<OptionBias />} />
         </Route>
