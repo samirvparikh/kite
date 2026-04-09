@@ -4,6 +4,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { isAxiosError } from "axios";
 import API from "../services/api";
 import { parseDashDate, useAppShell } from "../context/AppShellContext";
+import CenteredLoader from "../components/CenteredLoader";
 import "./Nifty921.css";
 
 type ScanRow = {
@@ -206,7 +207,7 @@ const Nifty921: React.FC = () => {
     return (
       <div className="nifty-page px-4 pb-10 pt-2 md:px-6">
         <div className="nifty-container mx-auto max-w-[1100px]">
-          <p className="nifty-muted">Loading…</p>
+          <CenteredLoader label="Loading…" />
         </div>
       </div>
     );

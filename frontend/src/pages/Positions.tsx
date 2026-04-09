@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { isAxiosError } from "axios";
 import API from "../services/api";
 import { parseDashDate, useAppShell } from "../context/AppShellContext";
+import CenteredLoader from "../components/CenteredLoader";
 
 type NetPosition = {
   tradingsymbol?: string;
@@ -169,9 +170,7 @@ const Positions: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="flex min-h-[40vh] items-center justify-center text-slate-500">
-        Loading positions…
-      </div>
+      <CenteredLoader label="Loading positions…" />
     );
   }
 

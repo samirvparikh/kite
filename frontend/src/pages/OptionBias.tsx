@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { isAxiosError } from "axios";
 import API from "../services/api";
 import { parseDashDate, useAppShell } from "../context/AppShellContext";
+import CenteredLoader from "../components/CenteredLoader";
 import "./Nifty921.css";
 import "./OptionBias.css";
 
@@ -174,7 +175,7 @@ const OptionBias: React.FC = () => {
     return (
       <div className="nifty-page px-4 pb-10 pt-2 md:px-6">
         <div className="nifty-container">
-          <p className="nifty-muted">Loading option bias…</p>
+          <CenteredLoader label="Loading option bias…" />
         </div>
       </div>
     );
@@ -345,7 +346,18 @@ const OptionBias: React.FC = () => {
                       </tr>
                     ) : (
                       data.calls.map((row) => (
-                        <tr key={row.tradingsymbol}>
+                        <tr
+                          key={row.tradingsymbol}
+                          className={
+                            row.strike === data.atm
+                              ? row.indicatorSide === "buy"
+                                ? "ob-row-atm ob-row-buy"
+                                : row.indicatorSide === "sell"
+                                  ? "ob-row-atm ob-row-sell"
+                                  : "ob-row-atm"
+                              : ""
+                          }
+                        >
                           <td>{row.strike}</td>
                           <td className="ob-mono">{row.tradingsymbol}</td>
                           <td>{row.ltp != null ? formatAmount(row.ltp) : "—"}</td>
@@ -381,7 +393,18 @@ const OptionBias: React.FC = () => {
                       </tr>
                     ) : (
                       data.puts.map((row) => (
-                        <tr key={row.tradingsymbol}>
+                        <tr
+                          key={row.tradingsymbol}
+                          className={
+                            row.strike === data.atm
+                              ? row.indicatorSide === "buy"
+                                ? "ob-row-atm ob-row-buy"
+                                : row.indicatorSide === "sell"
+                                  ? "ob-row-atm ob-row-sell"
+                                  : "ob-row-atm"
+                              : ""
+                          }
+                        >
                           <td>{row.strike}</td>
                           <td className="ob-mono">{row.tradingsymbol}</td>
                           <td>{row.ltp != null ? formatAmount(row.ltp) : "—"}</td>

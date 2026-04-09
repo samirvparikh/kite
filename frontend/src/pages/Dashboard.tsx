@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { isAxiosError } from "axios";
 import API from "../services/api";
 import { parseDashDate, useAppShell } from "../context/AppShellContext";
+import CenteredLoader from "../components/CenteredLoader";
 import "./Dashboard.css";
 
 type MarginSegment = {
@@ -147,9 +148,7 @@ const Dashboard: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="flex min-h-[50vh] items-center justify-center px-4 text-slate-500">
-        Loading dashboard…
-      </div>
+      <CenteredLoader label="Loading dashboard…" />
     );
   }
 

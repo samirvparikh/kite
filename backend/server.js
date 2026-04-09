@@ -685,12 +685,17 @@ marketRouter.get('/nifty50-scanner', async (req, res) => {
         } else if (type === '5min-breakout') {
             const isTodayBreakout = selectedDate === todayIST;
             const bySymbol = new Map(marketRows.map((r) => [r.symbol, r]));
-            const passed = new Set();
+            const breakoutRows = [];
+            const breakdownRows = [];
+            const errorRows = [];
 
             async function run5minBreakoutSymbol(symbol) {
                 const key = `NSE:${symbol}`;
                 const instrumentToken = quoteMap[key]?.instrument_token;
-                if (instrumentToken == null || instrumentToken === '') return;
+                if (instrumentToken == null || instrumentToken === '') {
+                    errorRows.push({ symbol, reason: 'Instrument token not found' });
+                    return;
+                }
 
                 let candles;
                 try {
@@ -699,15 +704,28 @@ marketRouter.get('/nifty50-scanner', async (req, res) => {
                         instrumentToken,
                         selectedDate
                     );
-                } catch {
+                } catch (e) {
+                    errorRows.push({
+                        symbol,
+                        reason: e.response?.data?.message || e.message || 'History error',
+                    });
                     return;
                 }
-                if (!candles.length) return;
+                if (!candles.length) {
+                    errorRows.push({ symbol, reason: 'No 5-minute candles' });
+                    return;
+                }
 
                 const idx915 = indexOfOpening915Bar(candles);
-                if (idx915 < 0) return;
+                if (idx915 < 0) {
+                    errorRows.push({ symbol, reason: 'Missing 09:15 5-minute bar' });
+                    return;
+                }
                 const bar915 = ohlcFromCandleRow(candles[idx915]);
-                if (!bar915) return;
+                if (!bar915) {
+                    errorRows.push({ symbol, reason: 'Invalid 09:15 bar OHLC' });
+                    return;
+                }
 
                 let mergeLtp = null;
                 if (isTodayBreakout) {
@@ -715,14 +733,70 @@ marketRouter.get('/nifty50-scanner', async (req, res) => {
                     if (!Number.isFinite(mergeLtp)) mergeLtp = null;
                 }
 
-                const ok = sessionBrokeBothSidesOfFirst5m(
-                    candles,
-                    idx915,
-                    bar915.high,
-                    bar915.low,
-                    mergeLtp
-                );
-                if (ok && bySymbol.has(symbol)) passed.add(symbol);
+                let maxH = Number.NEGATIVE_INFINITY;
+                let minL = Number.POSITIVE_INFINITY;
+                let dayOpen = Number.NaN;
+                let dayHigh = Number.NEGATIVE_INFINITY;
+                let dayLow = Number.POSITIVE_INFINITY;
+                let dayVolume = 0;
+                for (let i = 0; i < candles.length; i++) {
+                    const o = ohlcFromCandleRow(candles[i]);
+                    if (!o) continue;
+                    if (!Number.isFinite(dayOpen)) dayOpen = o.open;
+                    dayHigh = Math.max(dayHigh, o.high);
+                    dayLow = Math.min(dayLow, o.low);
+                    if (i > idx915) {
+                        maxH = Math.max(maxH, o.high);
+                        minL = Math.min(minL, o.low);
+                    }
+                    const v = parseFloat(candles[i]?.[5] ?? NaN);
+                    if (Number.isFinite(v)) dayVolume += v;
+                }
+                if (mergeLtp != null && Number.isFinite(mergeLtp)) {
+                    maxH = Math.max(maxH, mergeLtp);
+                    minL = Math.min(minL, mergeLtp);
+                }
+
+                const market = bySymbol.get(symbol);
+                if (!market) return;
+                const scanRef = Number.isFinite(mergeLtp) ? mergeLtp : market.last_price;
+                const prevClose = market.last_price - market.change_rs;
+                const valueLakhs =
+                    Number.isFinite(dayVolume) && Number.isFinite(scanRef)
+                        ? (dayVolume * scanRef) / 100000
+                        : null;
+                const base = {
+                    symbol,
+                    exchange: market.exchange,
+                    last_price: market.last_price,
+                    change_pct: market.change_pct,
+                    change_rs: market.change_rs,
+                    sector: market.sector,
+                    first_5m_high: bar915.high,
+                    first_5m_low: bar915.low,
+                    prev_close: Number.isFinite(prevClose) ? prevClose : null,
+                    open: Number.isFinite(dayOpen) ? dayOpen : null,
+                    high: Number.isFinite(dayHigh) ? dayHigh : null,
+                    low: Number.isFinite(dayLow) ? dayLow : null,
+                    volume_shares: Number.isFinite(dayVolume) ? Math.round(dayVolume) : null,
+                    value_lakhs: valueLakhs,
+                    scan_ref: scanRef,
+                };
+
+                if (maxH > bar915.high) {
+                    breakoutRows.push({
+                        ...base,
+                        side: 'breakout',
+                        diff: scanRef - bar915.high,
+                    });
+                }
+                if (minL < bar915.low) {
+                    breakdownRows.push({
+                        ...base,
+                        side: 'breakdown',
+                        diff: scanRef - bar915.low,
+                    });
+                }
             }
 
             const conc = 8;
@@ -731,10 +805,18 @@ marketRouter.get('/nifty50-scanner', async (req, res) => {
                 await Promise.all(batch.map((s) => run5minBreakoutSymbol(s)));
             }
 
-            stockRows = marketRows.filter((r) => passed.has(r.symbol));
-            stockRows.sort(
-                (a, b) => Math.abs(b.change_pct) - Math.abs(a.change_pct)
-            );
+            breakoutRows.sort((a, b) => b.diff - a.diff);
+            breakdownRows.sort((a, b) => a.diff - b.diff);
+            stockRows = [...breakoutRows, ...breakdownRows];
+            return res.json({
+                date: selectedDate,
+                source,
+                sectorRows: [],
+                stockRows,
+                breakoutRows,
+                breakdownRows,
+                errorRows,
+            });
         }
 
         return res.json({

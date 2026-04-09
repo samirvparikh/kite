@@ -79,6 +79,23 @@
   font-size: 12px;
 }
 
+.ob-row-atm td {
+  background: #fff7ed;
+}
+
+.ob-row-atm td:first-child {
+  border-left: 3px solid #f59e0b;
+  font-weight: 700;
+}
+
+.ob-row-atm.ob-row-buy td {
+  background: #ecfdf5;
+}
+
+.ob-row-atm.ob-row-sell td {
+  background: #fff1f2;
+}
+
 .ob-ind {
   display: inline-block;
   padding: 2px 8px;
