@@ -15,6 +15,7 @@ type ScanRow = {
   side: "breakout" | "breakdown";
   diff: number;
   price_source: string;
+  pct_921?: number | null;
 };
 
 type ErrorRow = { symbol: string; reason: string };
@@ -23,9 +24,35 @@ type KiteQuoteEnvelope = {
   data?: Record<string, { last_price?: number | string }>;
 };
 
+type SortCol =
+  | "symbol"
+  | "high_920_range"
+  | "low_920_range"
+  | "scan_ref"
+  | "side"
+  | "diff"
+  | "r_factor"
+  | "ltp"
+  | "pct_921";
+type SortDir = "asc" | "desc";
+type SortState = { col: SortCol; dir: SortDir };
+
 function formatAmount(value: unknown): string {
   const n = typeof value === "number" ? value : parseFloat(String(value ?? 0));
   return Number.isFinite(n) ? n.toFixed(2) : "0.00";
+}
+
+function rFactorPct(row: ScanRow): number | null {
+  const ref = row.side === "breakout" ? row.high_920_range : row.low_920_range;
+  if (!Number.isFinite(ref) || ref === 0) return null;
+  const current = row.scan_ref;
+  if (!Number.isFinite(current)) return null;
+  return ((current - ref) / ref) * 100;
+}
+
+function tieBreakSymbol(a: ScanRow, b: ScanRow, cmp: number): number {
+  if (cmp !== 0) return cmp;
+  return a.symbol.localeCompare(b.symbol);
 }
 
 function istToday(): string {
@@ -59,6 +86,14 @@ const Nifty921: React.FC = () => {
   const [errorRows, setErrorRows] = useState<ErrorRow[]>([]);
   const [totalSymbols, setTotalSymbols] = useState(50);
   const [liveLtp, setLiveLtp] = useState<Record<string, number>>({});
+  const [breakoutSort, setBreakoutSort] = useState<SortState>({
+    col: "diff",
+    dir: "desc",
+  });
+  const [breakdownSort, setBreakdownSort] = useState<SortState>({
+    col: "diff",
+    dir: "asc",
+  });
 
   useEffect(() => {
     const token = localStorage.getItem("access_token");
@@ -147,6 +182,99 @@ const Nifty921: React.FC = () => {
         .sort((a, b) => a.diff - b.diff),
     [scanRows]
   );
+
+  function sortRows(rows: ScanRow[], sort: SortState): ScanRow[] {
+    const mul = sort.dir === "asc" ? 1 : -1;
+    const copy = [...rows];
+    copy.sort((a, b) => {
+      let cmp = 0;
+      switch (sort.col) {
+        case "symbol":
+          cmp = a.symbol.localeCompare(b.symbol);
+          break;
+        case "high_920_range":
+          cmp = a.high_920_range - b.high_920_range;
+          break;
+        case "low_920_range":
+          cmp = a.low_920_range - b.low_920_range;
+          break;
+        case "scan_ref":
+          cmp = a.scan_ref - b.scan_ref;
+          break;
+        case "side":
+          cmp = a.side.localeCompare(b.side);
+          break;
+        case "diff":
+          cmp = a.diff - b.diff;
+          break;
+        case "r_factor":
+          cmp = (rFactorPct(a) ?? 0) - (rFactorPct(b) ?? 0);
+          break;
+        case "ltp": {
+          const la = liveLtp[a.symbol] ?? a.scan_ref;
+          const lb = liveLtp[b.symbol] ?? b.scan_ref;
+          cmp = la - lb;
+          break;
+        }
+        case "pct_921":
+          cmp = (a.pct_921 ?? 0) - (b.pct_921 ?? 0);
+          break;
+        default:
+          cmp = 0;
+      }
+      return tieBreakSymbol(a, b, cmp * mul);
+    });
+    return copy;
+  }
+
+  const sortedBreakoutRows = useMemo(
+    () => sortRows(breakoutRows, breakoutSort),
+    [breakoutRows, breakoutSort, liveLtp]
+  );
+  const sortedBreakdownRows = useMemo(
+    () => sortRows(breakdownRows, breakdownSort),
+    [breakdownRows, breakdownSort, liveLtp]
+  );
+
+  function toggleBreakoutSort(col: SortCol) {
+    setBreakoutSort((s) =>
+      s.col === col ? { col, dir: s.dir === "asc" ? "desc" : "asc" } : { col, dir: "asc" }
+    );
+  }
+  function toggleBreakdownSort(col: SortCol) {
+    setBreakdownSort((s) =>
+      s.col === col ? { col, dir: s.dir === "asc" ? "desc" : "asc" } : { col, dir: "asc" }
+    );
+  }
+
+  function SortTh({
+    column,
+    label,
+    sort,
+    onSort,
+  }: {
+    column: SortCol;
+    label: string;
+    sort: SortState;
+    onSort: (c: SortCol) => void;
+  }) {
+    const active = sort.col === column;
+    const ariaSort = active
+      ? sort.dir === "asc"
+        ? "ascending"
+        : "descending"
+      : "none";
+    return (
+      <th scope="col" aria-sort={ariaSort}>
+        <button type="button" className="nifty-th-sort" onClick={() => onSort(column)}>
+          {label}
+          <span className="nifty-sort-ind" aria-hidden>
+            {active ? (sort.dir === "asc" ? " ▲" : " ▼") : ""}
+          </span>
+        </button>
+      </th>
+    );
+  }
 
   const listSymbolKey = useMemo(() => {
     const set = new Set<string>();
@@ -279,24 +407,26 @@ const Nifty921: React.FC = () => {
               <table className="nifty-table">
                 <thead>
                   <tr>
-                    <th>Symbol</th>
-                    <th>High (09:15-09:20)</th>
-                    <th>Low (09:15-09:20)</th>
-                    <th>Scan Ref.</th>
-                    <th>Type</th>
-                    <th>Diff</th>
-                    <th>LTP</th>
+                    <SortTh column="symbol" label="Symbol" sort={breakoutSort} onSort={toggleBreakoutSort} />
+                    <SortTh column="high_920_range" label="High (09:15-09:20)" sort={breakoutSort} onSort={toggleBreakoutSort} />
+                    <SortTh column="low_920_range" label="Low (09:15-09:20)" sort={breakoutSort} onSort={toggleBreakoutSort} />
+                    <SortTh column="scan_ref" label="Scan Ref." sort={breakoutSort} onSort={toggleBreakoutSort} />
+                    <SortTh column="side" label="Type" sort={breakoutSort} onSort={toggleBreakoutSort} />
+                    <SortTh column="diff" label="Diff" sort={breakoutSort} onSort={toggleBreakoutSort} />
+                    <SortTh column="r_factor" label="R Factor %" sort={breakoutSort} onSort={toggleBreakoutSort} />
+                    <SortTh column="ltp" label="LTP" sort={breakoutSort} onSort={toggleBreakoutSort} />
+                    <SortTh column="pct_921" label="09:21 %" sort={breakoutSort} onSort={toggleBreakoutSort} />
                   </tr>
                 </thead>
                 <tbody>
                   {breakoutRows.length === 0 ? (
                     <tr>
-                      <td colSpan={7}>
+                      <td colSpan={9}>
                         No stocks above 09:15-09:20 high.
                       </td>
                     </tr>
                   ) : (
-                    breakoutRows.map((row) => (
+                    sortedBreakoutRows.map((row) => (
                       <tr key={row.symbol}>
                         <td>
                           <Link
@@ -327,8 +457,14 @@ const Nifty921: React.FC = () => {
                         >
                           {formatAmount(row.diff)}
                         </td>
+                        <td className={(rFactorPct(row) ?? 0) >= 0 ? "nifty-positive" : ""}>
+                          {rFactorPct(row) == null ? "-" : `${formatAmount(rFactorPct(row))}%`}
+                        </td>
                         <td className="nifty-ltp-live">
                           {displayLtp(row.symbol, row.scan_ref)}
+                        </td>
+                        <td className={(row.pct_921 ?? 0) >= 0 ? "nifty-positive" : ""} style={(row.pct_921 ?? 0) < 0 ? { color: "#b91c1c", fontWeight: 600 } : undefined}>
+                          {row.pct_921 == null ? "-" : `${formatAmount(row.pct_921)}%`}
                         </td>
                       </tr>
                     ))
@@ -344,24 +480,26 @@ const Nifty921: React.FC = () => {
               <table className="nifty-table">
                 <thead>
                   <tr>
-                    <th>Symbol</th>
-                    <th>High (09:15-09:20)</th>
-                    <th>Low (09:15-09:20)</th>
-                    <th>Scan Ref.</th>
-                    <th>Type</th>
-                    <th>Diff</th>
-                    <th>LTP</th>
+                    <SortTh column="symbol" label="Symbol" sort={breakdownSort} onSort={toggleBreakdownSort} />
+                    <SortTh column="high_920_range" label="High (09:15-09:20)" sort={breakdownSort} onSort={toggleBreakdownSort} />
+                    <SortTh column="low_920_range" label="Low (09:15-09:20)" sort={breakdownSort} onSort={toggleBreakdownSort} />
+                    <SortTh column="scan_ref" label="Scan Ref." sort={breakdownSort} onSort={toggleBreakdownSort} />
+                    <SortTh column="side" label="Type" sort={breakdownSort} onSort={toggleBreakdownSort} />
+                    <SortTh column="diff" label="Diff" sort={breakdownSort} onSort={toggleBreakdownSort} />
+                    <SortTh column="r_factor" label="R Factor %" sort={breakdownSort} onSort={toggleBreakdownSort} />
+                    <SortTh column="ltp" label="LTP" sort={breakdownSort} onSort={toggleBreakdownSort} />
+                    <SortTh column="pct_921" label="09:21 %" sort={breakdownSort} onSort={toggleBreakdownSort} />
                   </tr>
                 </thead>
                 <tbody>
                   {breakdownRows.length === 0 ? (
                     <tr>
-                      <td colSpan={7}>
+                      <td colSpan={9}>
                         No stocks below 09:15-09:20 low.
                       </td>
                     </tr>
                   ) : (
-                    breakdownRows.map((row) => (
+                    sortedBreakdownRows.map((row) => (
                       <tr key={row.symbol}>
                         <td>
                           <Link
@@ -387,8 +525,14 @@ const Nifty921: React.FC = () => {
                         <td style={{ color: "#b91c1c", fontWeight: 600 }}>
                           {formatAmount(row.diff)}
                         </td>
+                        <td className={(rFactorPct(row) ?? 0) >= 0 ? "nifty-positive" : ""} style={(rFactorPct(row) ?? 0) < 0 ? { color: "#b91c1c", fontWeight: 600 } : undefined}>
+                          {rFactorPct(row) == null ? "-" : `${formatAmount(rFactorPct(row))}%`}
+                        </td>
                         <td className="nifty-ltp-live">
                           {displayLtp(row.symbol, row.scan_ref)}
+                        </td>
+                        <td className={(row.pct_921 ?? 0) >= 0 ? "nifty-positive" : ""} style={(row.pct_921 ?? 0) < 0 ? { color: "#b91c1c", fontWeight: 600 } : undefined}>
+                          {row.pct_921 == null ? "-" : `${formatAmount(row.pct_921)}%`}
                         </td>
                       </tr>
                     ))

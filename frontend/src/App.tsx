@@ -9,6 +9,7 @@ import Breakout930 from "./pages/Breakout930";
 import OptionBias from "./pages/OptionBias";
 import Chart from "./pages/Chart";
 import Positions from "./pages/Positions";
+import MyTodayChoice from "./pages/MyTodayChoice";
 import AppLayout from "./layouts/AppLayout";
 
 const App: React.FC = () => {
@@ -26,6 +27,7 @@ const App: React.FC = () => {
           <Route path="/nifty50-920-breakout" element={<Nifty921 />} />
           <Route path="/nifty50-930-breakout" element={<Breakout930 />} />
           <Route path="/nifty-option-bias" element={<OptionBias />} />
+          <Route path="/my-today-choice" element={<MyTodayChoice />} />
         </Route>
       </Routes>
     </BrowserRouter>

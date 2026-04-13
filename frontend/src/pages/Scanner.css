@@ -144,6 +144,14 @@
   color: #1d4ed8;
 }
 
+.scanner-select {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 5px 8px;
+  font-size: 13px;
+  background: #fff;
+}
+
 .scanner-list-heading {
   margin: 0;
   padding: 12px 16px;

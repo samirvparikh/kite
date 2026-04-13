@@ -27,6 +27,7 @@ export const Sidebar: React.FC<Props> = ({ open, onClose }) => {
   const nifty = pathname === "/nifty50-920-breakout";
   const breakout930 = pathname === "/nifty50-930-breakout";
   const optionBias = pathname === "/nifty-option-bias";
+  const myTodayChoice = pathname === "/my-today-choice";
   const scan = pathname === "/scanner";
 
   const Item = ({
@@ -149,6 +150,13 @@ export const Sidebar: React.FC<Props> = ({ open, onClose }) => {
         >
           CE / PE bias
         </Item>
+        <Item
+          to={`/my-today-choice?date=${d}`}
+          active={myTodayChoice}
+          icon={<IconStar />}
+        >
+          My Today Choice
+        </Item>
       </nav>
 
       <div className="border-t border-slate-100 p-3 text-center text-xs text-slate-400">
@@ -235,6 +243,14 @@ function IconSplit() {
   return (
     <svg className="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 21 3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5V3" />
+    </svg>
+  );
+}
+
+function IconStar() {
+  return (
+    <svg className="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="m11.48 3.499 2.239 4.537 5.007.728-3.623 3.532.855 4.987-4.478-2.354-4.478 2.354.855-4.987-3.623-3.532 5.007-.728 2.239-4.537Z" />
     </svg>
   );
 }

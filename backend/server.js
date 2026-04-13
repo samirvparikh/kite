@@ -12,6 +12,7 @@ const {
 
 const app = express();
 app.use(cors());
+app.use(express.json());
 
 app.get('/', (req, res) => {
     res.json({
@@ -31,7 +32,7 @@ app.get('/api', (req, res) => {
             'GET /api/kite/user/margins',
             'GET /api/kite/portfolio/holdings',
             'GET /api/kite/portfolio/positions',
-            'GET /api/market/nifty50-scanner?date=YYYY-MM-DD&type=sector|top-gainers|top-losers|5min-breakout (first 5m H/L both sides broken)',
+            'GET /api/market/nifty50-scanner?date=YYYY-MM-DD&type=sector|top-gainers|top-losers|5min-breakout (5min-breakout scans NSE EQ universe)',
             'GET /api/kite/quote?i=NSE:INFY&i=...',
             'GET /api/scan/nifty50-920-breakout?date=YYYY-MM-DD',
             'GET /api/scan/nifty50-930-breakout?date=YYYY-MM-DD',
@@ -81,6 +82,61 @@ app.get('/api/kite/portfolio/holdings', (req, res) =>
 app.get('/api/kite/portfolio/positions', (req, res) =>
     kiteGet(req, res, 'portfolio/positions')
 );
+
+app.post('/api/kite/orders', async (req, res) => {
+    const accessToken = getBearerToken(req);
+    if (!accessToken) {
+        return res.status(401).json({ error: 'Missing access token' });
+    }
+    if (!API_KEY) {
+        return res.status(500).json({ error: 'API_KEY not configured' });
+    }
+    const tradingsymbol = String(req.body?.tradingsymbol ?? '').trim().toUpperCase();
+    const exchange = String(req.body?.exchange ?? 'NSE').trim().toUpperCase();
+    const qtyRaw = parseInt(String(req.body?.quantity ?? '1'), 10);
+    const quantity = Number.isFinite(qtyRaw) ? Math.max(1, qtyRaw) : 1;
+    const transaction_type = String(req.body?.transaction_type ?? 'BUY')
+        .trim()
+        .toUpperCase();
+
+    if (!tradingsymbol) {
+        return res.status(400).json({ error: 'Missing tradingsymbol' });
+    }
+    if (!['BUY', 'SELL'].includes(transaction_type)) {
+        return res.status(400).json({ error: 'Invalid transaction_type' });
+    }
+
+    const payload = qs.stringify({
+        exchange,
+        tradingsymbol,
+        transaction_type,
+        quantity,
+        product: 'MIS',
+        order_type: 'MARKET',
+        variety: 'regular',
+        validity: 'DAY',
+    });
+
+    try {
+        const response = await axios.post(
+            'https://api.kite.trade/orders/regular',
+            payload,
+            {
+                headers: {
+                    'X-Kite-Version': '3',
+                    Authorization: `token ${API_KEY}:${accessToken}`,
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+            }
+        );
+        return res.json(response.data);
+    } catch (error) {
+        console.error(error.response?.data || error.message);
+        return res.status(error.response?.status || 500).json(
+            error.response?.data || { error: error.message }
+        );
+    }
+});
 
 function getBearerToken(req) {
     const auth = req.headers.authorization;
@@ -533,6 +589,69 @@ async function fetchQuoteMap(accessToken) {
     return quoteRes.data?.data ?? {};
 }
 
+async function fetchQuoteMapForSymbols(accessToken, symbols) {
+    const out = {};
+    const chunkSize = 250;
+    for (let i = 0; i < symbols.length; i += chunkSize) {
+        const batch = symbols.slice(i, i + chunkSize);
+        const instruments = batch.map((s) => `NSE:${s}`);
+        const q = instruments.map((k) => `i=${encodeURIComponent(k)}`).join('&');
+        const quoteRes = await axios.get(`https://api.kite.trade/quote?${q}`, {
+            headers: {
+                'X-Kite-Version': '3',
+                Authorization: `token ${API_KEY}:${accessToken}`,
+            },
+        });
+        Object.assign(out, quoteRes.data?.data ?? {});
+    }
+    return out;
+}
+
+let NSE_EQ_UNIVERSE_CACHE = {
+    atMs: 0,
+    symbols: [],
+};
+
+async function loadNseEqUniverse(accessToken) {
+    const now = Date.now();
+    if (
+        Array.isArray(NSE_EQ_UNIVERSE_CACHE.symbols) &&
+        NSE_EQ_UNIVERSE_CACHE.symbols.length > 0 &&
+        now - NSE_EQ_UNIVERSE_CACHE.atMs < 15 * 60 * 1000
+    ) {
+        return NSE_EQ_UNIVERSE_CACHE.symbols;
+    }
+    const res = await axios.get('https://api.kite.trade/instruments', {
+        headers: {
+            'X-Kite-Version': '3',
+            Authorization: `token ${API_KEY}:${accessToken}`,
+        },
+        responseType: 'text',
+    });
+    const csv = String(res.data ?? '');
+    const lines = csv.split('\n');
+    if (lines.length < 2) return [];
+    const set = new Set();
+    for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        const cols = line.split(',');
+        if (cols.length < 4) continue;
+        const tradingsymbol = String(cols[2] ?? '').trim();
+        const instrumentType = String(cols[cols.length - 3] ?? '').trim();
+        const segment = String(cols[cols.length - 2] ?? '').trim();
+        const exchange = String(cols[cols.length - 1] ?? '').trim();
+        if (!tradingsymbol) continue;
+        if (exchange !== 'NSE') continue;
+        if (segment !== 'NSE') continue;
+        if (instrumentType !== 'EQ') continue;
+        set.add(tradingsymbol);
+    }
+    const symbols = [...set].sort();
+    NSE_EQ_UNIVERSE_CACHE = { atMs: now, symbols };
+    return symbols;
+}
+
 async function fetchHistoricalDayPair(accessToken, instrumentToken, sel, prev) {
     const path = `instruments/historical/${instrumentToken}/day?from=${encodeURIComponent(prev)}&to=${encodeURIComponent(sel)}`;
     const histRes = await axios.get(`https://api.kite.trade/${path}`, {
@@ -664,34 +783,62 @@ marketRouter.get('/nifty50-scanner', async (req, res) => {
     const type = String(req.query.type ?? 'top-gainers');
 
     try {
-        const { source, rows: marketRows, quoteMap } =
-            await buildNifty50MarketRows(accessToken, selectedDate);
-
-        if (type === 'sector') {
-            const sectorRows = aggregateSectorRows(marketRows);
-            return res.json({
-                date: selectedDate,
-                source,
-                sectorRows,
-                stockRows: marketRows,
-            });
-        }
-
-        let stockRows = [...marketRows];
-        if (type === 'top-gainers') {
-            stockRows.sort((a, b) => b.change_pct - a.change_pct);
-        } else if (type === 'top-losers') {
-            stockRows.sort((a, b) => a.change_pct - b.change_pct);
-        } else if (type === '5min-breakout') {
+        if (type === '5min-breakout') {
+            const source = 'quote';
             const isTodayBreakout = selectedDate === todayIST;
-            const bySymbol = new Map(marketRows.map((r) => [r.symbol, r]));
             const breakoutRows = [];
             const breakdownRows = [];
             const errorRows = [];
+            const universeModeRaw = String(req.query.universe ?? 'all').trim().toLowerCase();
+            const universeMode =
+                universeModeRaw === 'nifty50'
+                    ? 'nifty50'
+                    : universeModeRaw === 'top-volume' || universeModeRaw === 'top'
+                    ? 'top-volume'
+                    : 'all';
+            const universeSymbols = await loadNseEqUniverse(accessToken);
+            const quoteAll = await fetchQuoteMapForSymbols(accessToken, universeSymbols);
+            let scanSymbols = universeSymbols;
+            if (universeMode === 'nifty50') {
+                scanSymbols = NIFTY50_SYMBOLS.filter((s) => quoteAll[`NSE:${s}`]);
+            } else if (universeMode === 'top-volume') {
+                const ranked = universeSymbols
+                    .map((s) => ({
+                        symbol: s,
+                        volume: parseFloat(quoteAll[`NSE:${s}`]?.volume ?? NaN),
+                    }))
+                    .filter((r) => Number.isFinite(r.volume) && r.volume > 0)
+                    .sort((a, b) => b.volume - a.volume);
+                const topN = 400;
+                scanSymbols = ranked.slice(0, topN).map((r) => r.symbol);
+            }
+            const bySymbol = new Map();
+            for (const symbol of scanSymbols) {
+                const q = quoteAll[`NSE:${symbol}`];
+                if (!q) continue;
+                const last = parseFloat(q?.last_price ?? NaN);
+                const close = parseFloat(q?.ohlc?.close ?? NaN);
+                const changeRs =
+                    Number.isFinite(last) && Number.isFinite(close)
+                        ? last - close
+                        : 0;
+                const changePct =
+                    Number.isFinite(close) && close !== 0 && Number.isFinite(changeRs)
+                        ? (changeRs / close) * 100
+                        : 0;
+                bySymbol.set(symbol, {
+                    symbol,
+                    exchange: 'NSE',
+                    last_price: Number.isFinite(last) ? last : 0,
+                    change_pct: Number.isFinite(changePct) ? changePct : 0,
+                    change_rs: Number.isFinite(changeRs) ? changeRs : 0,
+                    sector: 'Others',
+                });
+            }
 
             async function run5minBreakoutSymbol(symbol) {
                 const key = `NSE:${symbol}`;
-                const instrumentToken = quoteMap[key]?.instrument_token;
+                const instrumentToken = quoteAll[key]?.instrument_token;
                 if (instrumentToken == null || instrumentToken === '') {
                     errorRows.push({ symbol, reason: 'Instrument token not found' });
                     return;
@@ -729,7 +876,7 @@ marketRouter.get('/nifty50-scanner', async (req, res) => {
 
                 let mergeLtp = null;
                 if (isTodayBreakout) {
-                    mergeLtp = parseFloat(quoteMap[key]?.last_price ?? '');
+                    mergeLtp = parseFloat(quoteAll[key]?.last_price ?? '');
                     if (!Number.isFinite(mergeLtp)) mergeLtp = null;
                 }
 
@@ -800,14 +947,14 @@ marketRouter.get('/nifty50-scanner', async (req, res) => {
             }
 
             const conc = 8;
-            for (let i = 0; i < NIFTY50_SYMBOLS.length; i += conc) {
-                const batch = NIFTY50_SYMBOLS.slice(i, i + conc);
+            for (let i = 0; i < scanSymbols.length; i += conc) {
+                const batch = scanSymbols.slice(i, i + conc);
                 await Promise.all(batch.map((s) => run5minBreakoutSymbol(s)));
             }
 
             breakoutRows.sort((a, b) => b.diff - a.diff);
             breakdownRows.sort((a, b) => a.diff - b.diff);
-            stockRows = [...breakoutRows, ...breakdownRows];
+            const stockRows = [...breakoutRows, ...breakdownRows];
             return res.json({
                 date: selectedDate,
                 source,
@@ -816,7 +963,29 @@ marketRouter.get('/nifty50-scanner', async (req, res) => {
                 breakoutRows,
                 breakdownRows,
                 errorRows,
+                totalSymbols: scanSymbols.length,
+                universeMode,
             });
+        }
+
+        const { source, rows: marketRows } =
+            await buildNifty50MarketRows(accessToken, selectedDate);
+
+        if (type === 'sector') {
+            const sectorRows = aggregateSectorRows(marketRows);
+            return res.json({
+                date: selectedDate,
+                source,
+                sectorRows,
+                stockRows: marketRows,
+            });
+        }
+
+        let stockRows = [...marketRows];
+        if (type === 'top-gainers') {
+            stockRows.sort((a, b) => b.change_pct - a.change_pct);
+        } else if (type === 'top-losers') {
+            stockRows.sort((a, b) => a.change_pct - b.change_pct);
         }
 
         return res.json({
@@ -1034,6 +1203,12 @@ app.get('/api/scan/nifty50-920-breakout', async (req, res) => {
 
         if (latestPrice > rangeHigh || latestPrice < rangeLow) {
             const side = latestPrice > rangeHigh ? 'breakout' : 'breakdown';
+            const close921 = getCandleValue(candles, '09:21:00', 4);
+            const ref921 = side === 'breakout' ? rangeHigh : rangeLow;
+            const pct921 =
+                Number.isFinite(close921) && Number.isFinite(ref921) && ref921 !== 0
+                    ? ((close921 - ref921) / ref921) * 100
+                    : null;
             scanRows.push({
                 symbol,
                 high_920_range: rangeHigh,
@@ -1045,6 +1220,7 @@ app.get('/api/scan/nifty50-920-breakout', async (req, res) => {
                         ? latestPrice - rangeHigh
                         : latestPrice - rangeLow,
                 price_source: priceSource,
+                pct_921: pct921,
             });
         }
     }

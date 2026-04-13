@@ -142,10 +142,11 @@ function apiTypeParam(pageType: string): string {
 
 const Scanner: React.FC = () => {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { setScanDate } = useAppShell();
   const type = searchParams.get("type") ?? "sector";
   const date = searchParams.get("date") ?? istToday();
+  const universeMode = searchParams.get("universe") ?? "all";
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -355,6 +356,7 @@ const Scanner: React.FC = () => {
     const q = new URLSearchParams();
     q.set("date", date);
     q.set("type", apiTypeParam(type));
+    if (type === "5min-breakout") q.set("universe", universeMode);
 
     API.get<{
       date: string;
@@ -364,6 +366,8 @@ const Scanner: React.FC = () => {
       breakoutRows?: StockRow[];
       breakdownRows?: StockRow[];
       errorRows?: Array<{ symbol: string; reason: string }>;
+      universeMode?: string;
+      totalSymbols?: number;
     }>(`/api/market/nifty50-scanner?${q.toString()}`)
       .then((res) => {
         if (cancelled) return;
@@ -404,7 +408,13 @@ const Scanner: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [type, date]);
+  }, [type, date, universeMode]);
+
+  function setUniverseMode(next: "all" | "top-volume") {
+    const q = new URLSearchParams(searchParams);
+    q.set("universe", next);
+    setSearchParams(q, { replace: true });
+  }
 
   useEffect(() => {
     setSelectedSector(null);
@@ -503,10 +513,28 @@ const Scanner: React.FC = () => {
             ) : null}
             {is5minBreakout ? (
               <p className="scanner-muted" style={{ margin: "8px 0 0", maxWidth: 720 }}>
-                NIFTY 50 names where <strong>first 5-minute candle (09:15)</strong>{" "}
+                NSE equity universe where <strong>first 5-minute candle (09:15)</strong>{" "}
                 high/low is broken. Lists are separated into <strong>Breakout</strong>{" "}
                 and <strong>Breakdown</strong>. <strong>LTP</strong> updates live.
               </p>
+            ) : null}
+            {is5minBreakout ? (
+              <div className="scanner-muted" style={{ marginTop: 8 }}>
+                Universe{" "}
+                <select
+                  value={universeMode === "top" ? "top-volume" : universeMode}
+                  onChange={(e) =>
+                    setUniverseMode(
+                      e.target.value === "top-volume" ? "top-volume" : "all"
+                    )
+                  }
+                  className="scanner-select"
+                  style={{ marginLeft: 6 }}
+                >
+                  <option value="all">All NSE EQ</option>
+                  <option value="top-volume">Top Volume (fast)</option>
+                </select>
+              </div>
             ) : null}
           </div>
           <Link
@@ -549,10 +577,6 @@ const Scanner: React.FC = () => {
                     <SortTh column="symbol" label="Symbol" sort={breakoutSort} onSort={toggleBreakoutSort} />
                     <SortTh column="first_5m_high" label="1st 5m High" sort={breakoutSort} onSort={toggleBreakoutSort} />
                     <SortTh column="first_5m_low" label="1st 5m Low" sort={breakoutSort} onSort={toggleBreakoutSort} />
-                    <SortTh column="prev_close" label="Prev. Close" sort={breakoutSort} onSort={toggleBreakoutSort} />
-                    <SortTh column="open" label="Open" sort={breakoutSort} onSort={toggleBreakoutSort} />
-                    <SortTh column="high" label="High" sort={breakoutSort} onSort={toggleBreakoutSort} />
-                    <SortTh column="low" label="Low" sort={breakoutSort} onSort={toggleBreakoutSort} />
                     <SortTh column="volume_shares" label="Volume (Shares)" sort={breakoutSort} onSort={toggleBreakoutSort} />
                     <SortTh column="value_lakhs" label="Value (₹ Lakhs)" sort={breakoutSort} onSort={toggleBreakoutSort} />
                     <SortTh column="scan_ref" label="Scan Ref." sort={breakoutSort} onSort={toggleBreakoutSort} />
@@ -581,10 +605,6 @@ const Scanner: React.FC = () => {
                         </td>
                         <td>{formatAmount(row.first_5m_high)}</td>
                         <td>{formatAmount(row.first_5m_low)}</td>
-                        <td>{row.prev_close == null ? "-" : formatAmount(row.prev_close)}</td>
-                        <td>{row.open == null ? "-" : formatAmount(row.open)}</td>
-                        <td>{row.high == null ? "-" : formatAmount(row.high)}</td>
-                        <td>{row.low == null ? "-" : formatAmount(row.low)}</td>
                         <td>{row.volume_shares == null ? "-" : Math.round(row.volume_shares).toLocaleString("en-IN")}</td>
                         <td>{row.value_lakhs == null ? "-" : formatAmount(row.value_lakhs)}</td>
                         <td>{formatAmount(row.scan_ref ?? row.last_price)}</td>
@@ -613,10 +633,6 @@ const Scanner: React.FC = () => {
                     <SortTh column="symbol" label="Symbol" sort={breakdownSort} onSort={toggleBreakdownSort} />
                     <SortTh column="first_5m_high" label="1st 5m High" sort={breakdownSort} onSort={toggleBreakdownSort} />
                     <SortTh column="first_5m_low" label="1st 5m Low" sort={breakdownSort} onSort={toggleBreakdownSort} />
-                    <SortTh column="prev_close" label="Prev. Close" sort={breakdownSort} onSort={toggleBreakdownSort} />
-                    <SortTh column="open" label="Open" sort={breakdownSort} onSort={toggleBreakdownSort} />
-                    <SortTh column="high" label="High" sort={breakdownSort} onSort={toggleBreakdownSort} />
-                    <SortTh column="low" label="Low" sort={breakdownSort} onSort={toggleBreakdownSort} />
                     <SortTh column="volume_shares" label="Volume (Shares)" sort={breakdownSort} onSort={toggleBreakdownSort} />
                     <SortTh column="value_lakhs" label="Value (₹ Lakhs)" sort={breakdownSort} onSort={toggleBreakdownSort} />
                     <SortTh column="scan_ref" label="Scan Ref." sort={breakdownSort} onSort={toggleBreakdownSort} />
@@ -645,10 +661,6 @@ const Scanner: React.FC = () => {
                         </td>
                         <td>{formatAmount(row.first_5m_high)}</td>
                         <td>{formatAmount(row.first_5m_low)}</td>
-                        <td>{row.prev_close == null ? "-" : formatAmount(row.prev_close)}</td>
-                        <td>{row.open == null ? "-" : formatAmount(row.open)}</td>
-                        <td>{row.high == null ? "-" : formatAmount(row.high)}</td>
-                        <td>{row.low == null ? "-" : formatAmount(row.low)}</td>
                         <td>{row.volume_shares == null ? "-" : Math.round(row.volume_shares).toLocaleString("en-IN")}</td>
                         <td>{row.value_lakhs == null ? "-" : formatAmount(row.value_lakhs)}</td>
                         <td>{formatAmount(row.scan_ref ?? row.last_price)}</td>
