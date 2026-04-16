@@ -9,6 +9,7 @@ import "./Scanner.css";
 type PickRow = {
   symbol: string;
   exchange: string;
+  last_price?: number;
   first_5m_high?: number;
   first_5m_low?: number;
   scan_ref?: number;
