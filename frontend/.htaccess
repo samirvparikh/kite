@@ -1,0 +1,13 @@
+RewriteEngine On
+
+# IMPORTANT: don't rewrite API calls to index.html
+RewriteCond %{REQUEST_URI} ^/api [NC]
+RewriteRule ^ - [L]
+
+# Serve real files/folders normally
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# Everything else -> React app entry
+RewriteRule ^ index.html [L]

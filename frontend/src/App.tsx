@@ -11,6 +11,11 @@ import Chart from "./pages/Chart";
 import Positions from "./pages/Positions";
 import MyTodayChoice from "./pages/MyTodayChoice";
 import AppLayout from "./layouts/AppLayout";
+import Static5MinBreakout from "./pages/static/Static5MinBreakout";
+import Static920Breakout from "./pages/static/Static920Breakout";
+import Static930Breakout from "./pages/static/Static930Breakout";
+import StaticCePeBias from "./pages/static/StaticCePeBias";
+import StaticMyTodayChoice from "./pages/static/StaticMyTodayChoice";
 
 const App: React.FC = () => {
   return (
@@ -20,6 +25,11 @@ const App: React.FC = () => {
         <Route path="/login" element={<Login />} />
         <Route path="/callback" element={<Callback />} />
         <Route path="/chart" element={<Chart />} />
+        <Route path="/scanners/5min-breakout" element={<Static5MinBreakout />} />
+        <Route path="/scanners/9-20-breakout" element={<Static920Breakout />} />
+        <Route path="/scanners/9-30-breakout" element={<Static930Breakout />} />
+        <Route path="/scanners/ce-pe-bias" element={<StaticCePeBias />} />
+        <Route path="/scanners/my-today-choice" element={<StaticMyTodayChoice />} />
         <Route element={<AppLayout />}>
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/positions" element={<Positions />} />

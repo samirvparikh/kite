@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" fill="none">
+  <rect width="1200" height="700" fill="#F8FAFC"/>
+  <rect x="80" y="80" width="1040" height="540" rx="24" fill="white" stroke="#E2E8F0"/>
+  <text x="140" y="170" fill="#0F172A" font-family="Arial, sans-serif" font-size="44" font-weight="700">5 Min Breakout</text>
+  <text x="140" y="215" fill="#475569" font-family="Arial, sans-serif" font-size="24">First candle range breakout preview</text>
+  <polyline points="150,490 300,440 430,470 560,360 700,390 860,280 1030,210" stroke="#F5821F" stroke-width="10" fill="none" stroke-linecap="round"/>
+  <line x1="150" y1="540" x2="1030" y2="540" stroke="#CBD5E1" stroke-width="4"/>
+</svg>

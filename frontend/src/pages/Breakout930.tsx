@@ -230,6 +230,7 @@ const Breakout930: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { setScanDate, scanDate } = useAppShell();
+  const isPublicPage = location.pathname.startsWith("/scanners/");
   const rawDate = searchParams.get("date");
   const dateParam =
     rawDate != null && rawDate.trim() !== ""
@@ -274,10 +275,10 @@ const Breakout930: React.FC = () => {
 
   useEffect(() => {
     const token = localStorage.getItem("access_token");
-    if (!token) {
+    if (!token && !isPublicPage) {
       navigate("/login", { replace: true });
     }
-  }, [navigate]);
+  }, [isPublicPage, navigate]);
 
   /** Keep shell scan date aligned with ?date= (including padded past dates). */
   useEffect(() => {
@@ -478,9 +479,13 @@ const Breakout930: React.FC = () => {
           </div>
           <Link
             className="nifty-back"
-            to={`/dashboard?date=${encodeURIComponent(selectedDate)}`}
+            to={
+              isPublicPage
+                ? "/#scanners"
+                : `/dashboard?date=${encodeURIComponent(selectedDate)}`
+            }
           >
-            Back to Dashboard
+            {isPublicPage ? "Back to Home" : "Back to Dashboard"}
           </Link>
         </div>
 

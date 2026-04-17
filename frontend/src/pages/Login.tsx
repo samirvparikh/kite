@@ -8,7 +8,7 @@ const Login: React.FC = () => {
 
   const handleLogin = async () => {
     try {
-      const res = await API.get<{ url: string }>("/login");
+      const res = await API.get<{ url: string }>("/api/login");
       window.location.href = res.data.url;
     } catch (error) {
       console.error("Login error:", error);

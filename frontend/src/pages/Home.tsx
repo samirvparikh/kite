@@ -5,6 +5,7 @@ import { BrandLogo } from "../components/BrandLogo";
 const Home: React.FC = () => {
   const [hasSession, setHasSession] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [mobileScannersOpen, setMobileScannersOpen] = useState(false);
 
   useEffect(() => {
     setHasSession(Boolean(localStorage.getItem("access_token")));
@@ -22,9 +23,36 @@ const Home: React.FC = () => {
             <a href="#features" className="transition hover:text-brand-orange">
               Features
             </a>
-            <a href="#scanners" className="transition hover:text-brand-orange">
-              Scanners
-            </a>
+            <div className="group relative">
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 transition hover:text-brand-orange"
+              >
+                Scanners
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+                </svg>
+              </button>
+              <div className="invisible absolute left-0 top-full z-30 w-56 pt-2 opacity-0 transition group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100">
+                <div className="rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
+                  <Link to="/scanners/5min-breakout" className="block px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">
+                    5 Min Breakout
+                  </Link>
+                  <Link to="/scanners/9-20-breakout" className="block px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">
+                    9:20 Breakout
+                  </Link>
+                  <Link to="/scanners/9-30-breakout" className="block px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">
+                    9:30 Breakout
+                  </Link>
+                  <Link to="/scanners/ce-pe-bias" className="block px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">
+                    CE / PE bias
+                  </Link>
+                  <Link to="/scanners/my-today-choice" className="block px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">
+                    My Today Choice
+                  </Link>
+                </div>
+              </div>
+            </div>
             <a href="#connect" className="transition hover:text-brand-orange">
               Kite Connect
             </a>
@@ -76,13 +104,35 @@ const Home: React.FC = () => {
               >
                 Features
               </a>
-              <a
-                href="#scanners"
-                className="rounded-lg px-3 py-2 hover:bg-slate-50"
-                onClick={() => setMenuOpen(false)}
+              <button
+                type="button"
+                className="flex items-center justify-between rounded-lg px-3 py-2 hover:bg-slate-50"
+                onClick={() => setMobileScannersOpen((v) => !v)}
               >
-                Scanners
-              </a>
+                <span>Scanners</span>
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d={mobileScannersOpen ? "M18 12H6" : "M12 6v12m6-6H6"} />
+                </svg>
+              </button>
+              {mobileScannersOpen && (
+                <div className="ml-3 flex flex-col gap-1">
+                  <Link to="/scanners/5min-breakout" className="rounded-lg px-3 py-2 hover:bg-slate-50" onClick={() => setMenuOpen(false)}>
+                    5 Min Breakout
+                  </Link>
+                  <Link to="/scanners/9-20-breakout" className="rounded-lg px-3 py-2 hover:bg-slate-50" onClick={() => setMenuOpen(false)}>
+                    9:20 Breakout
+                  </Link>
+                  <Link to="/scanners/9-30-breakout" className="rounded-lg px-3 py-2 hover:bg-slate-50" onClick={() => setMenuOpen(false)}>
+                    9:30 Breakout
+                  </Link>
+                  <Link to="/scanners/ce-pe-bias" className="rounded-lg px-3 py-2 hover:bg-slate-50" onClick={() => setMenuOpen(false)}>
+                    CE / PE bias
+                  </Link>
+                  <Link to="/scanners/my-today-choice" className="rounded-lg px-3 py-2 hover:bg-slate-50" onClick={() => setMenuOpen(false)}>
+                    My Today Choice
+                  </Link>
+                </div>
+              )}
               <a
                 href="#connect"
                 className="rounded-lg px-3 py-2 hover:bg-slate-50"

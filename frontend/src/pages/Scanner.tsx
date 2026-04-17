@@ -144,6 +144,7 @@ const Scanner: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { setScanDate } = useAppShell();
+  const isPublicPage = location.pathname.startsWith("/scanners/");
   const type = searchParams.get("type") ?? "sector";
   const date = searchParams.get("date") ?? istToday();
   const universeMode = searchParams.get("universe") ?? "all";
@@ -337,10 +338,10 @@ const Scanner: React.FC = () => {
 
   useEffect(() => {
     const token = localStorage.getItem("access_token");
-    if (!token) {
+    if (!token && !isPublicPage) {
       navigate("/login", { replace: true });
     }
-  }, [navigate]);
+  }, [isPublicPage, navigate]);
 
   useEffect(() => {
     const d = parseDashDate(searchParams.get("date"));
@@ -539,9 +540,13 @@ const Scanner: React.FC = () => {
           </div>
           <Link
             className="scanner-back"
-            to={`/dashboard?date=${encodeURIComponent(date)}`}
+            to={
+              isPublicPage
+                ? "/#scanners"
+                : `/dashboard?date=${encodeURIComponent(date)}`
+            }
           >
-            Back to Dashboard
+            {isPublicPage ? "Back to Home" : "Back to Dashboard"}
           </Link>
         </div>
 

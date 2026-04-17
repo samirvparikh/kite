@@ -31,6 +31,7 @@ const MyTodayChoice: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { setScanDate } = useAppShell();
+  const isPublicPage = location.pathname.startsWith("/scanners/");
   const date = searchParams.get("date") ?? istToday();
   const universe = searchParams.get("universe") ?? "nifty50";
   const [loading, setLoading] = useState(true);
@@ -40,8 +41,8 @@ const MyTodayChoice: React.FC = () => {
 
   useEffect(() => {
     const token = localStorage.getItem("access_token");
-    if (!token) navigate("/login", { replace: true });
-  }, [navigate]);
+    if (!token && !isPublicPage) navigate("/login", { replace: true });
+  }, [isPublicPage, navigate]);
 
   useEffect(() => {
     const d = parseDashDate(searchParams.get("date"));
@@ -174,8 +175,15 @@ const MyTodayChoice: React.FC = () => {
               </select>
             </div>
           </div>
-          <Link className="scanner-back" to={`/dashboard?date=${encodeURIComponent(date)}`}>
-            Back to Dashboard
+          <Link
+            className="scanner-back"
+            to={
+              isPublicPage
+                ? "/#scanners"
+                : `/dashboard?date=${encodeURIComponent(date)}`
+            }
+          >
+            {isPublicPage ? "Back to Home" : "Back to Dashboard"}
           </Link>
         </div>
 

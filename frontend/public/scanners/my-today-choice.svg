@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" fill="none">
+  <rect width="1200" height="700" fill="#F8FAFC"/>
+  <rect x="80" y="80" width="1040" height="540" rx="24" fill="white" stroke="#E2E8F0"/>
+  <text x="140" y="170" fill="#0F172A" font-family="Arial, sans-serif" font-size="44" font-weight="700">My Today Choice</text>
+  <text x="140" y="215" fill="#475569" font-family="Arial, sans-serif" font-size="24">Daily shortlist preview</text>
+  <rect x="150" y="270" width="900" height="280" rx="18" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <circle cx="220" cy="340" r="28" fill="#F5821F"/>
+  <text x="210" y="349" fill="white" font-family="Arial, sans-serif" font-size="24" font-weight="700">1</text>
+  <text x="280" y="350" fill="#0F172A" font-family="Arial, sans-serif" font-size="30" font-weight="700">Top Momentum Pick</text>
+  <circle cx="220" cy="415" r="28" fill="#FB923C"/>
+  <text x="210" y="424" fill="white" font-family="Arial, sans-serif" font-size="24" font-weight="700">2</text>
+  <text x="280" y="425" fill="#0F172A" font-family="Arial, sans-serif" font-size="30" font-weight="700">Backup Candidate</text>
+  <circle cx="220" cy="490" r="28" fill="#FDBA74"/>
+  <text x="210" y="499" fill="#0F172A" font-family="Arial, sans-serif" font-size="24" font-weight="700">3</text>
+  <text x="280" y="500" fill="#0F172A" font-family="Arial, sans-serif" font-size="30" font-weight="700">Watchlist Entry</text>
+</svg>

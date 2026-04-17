@@ -74,6 +74,7 @@ const Nifty921: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { setScanDate } = useAppShell();
+  const isPublicPage = location.pathname.startsWith("/scanners/");
   const rawDate = searchParams.get("date");
   const dateParam = rawDate != null && rawDate.trim() !== "" ? normalizePageDate(rawDate) : istToday();
 
@@ -97,10 +98,10 @@ const Nifty921: React.FC = () => {
 
   useEffect(() => {
     const token = localStorage.getItem("access_token");
-    if (!token) {
+    if (!token && !isPublicPage) {
       navigate("/login", { replace: true });
     }
-  }, [navigate]);
+  }, [isPublicPage, navigate]);
 
   useEffect(() => {
     const d = parseDashDate(searchParams.get("date"));
@@ -368,9 +369,13 @@ const Nifty921: React.FC = () => {
           </div>
           <Link
             className="nifty-back"
-            to={`/dashboard?date=${encodeURIComponent(selectedDate)}`}
+            to={
+              isPublicPage
+                ? "/#scanners"
+                : `/dashboard?date=${encodeURIComponent(selectedDate)}`
+            }
           >
-            Back to Dashboard
+            {isPublicPage ? "Back to Home" : "Back to Dashboard"}
           </Link>
         </div>
 

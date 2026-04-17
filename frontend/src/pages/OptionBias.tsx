@@ -55,6 +55,7 @@ const OptionBias: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { setScanDate } = useAppShell();
+  const isPublicPage = location.pathname.startsWith("/scanners/");
 
   const wingsParam = parseInt(searchParams.get("wings") ?? "5", 10);
   const wings = Number.isFinite(wingsParam)
@@ -70,8 +71,8 @@ const OptionBias: React.FC = () => {
 
   useEffect(() => {
     const token = localStorage.getItem("access_token");
-    if (!token) navigate("/login", { replace: true });
-  }, [navigate]);
+    if (!token && !isPublicPage) navigate("/login", { replace: true });
+  }, [isPublicPage, navigate]);
 
   useEffect(() => {
     const d = parseDashDate(searchParams.get("date"));
@@ -275,8 +276,11 @@ const OptionBias: React.FC = () => {
               </button>
             </div>
           </div>
-          <Link className="nifty-back" to="/dashboard">
-            Dashboard
+          <Link
+            className="nifty-back"
+            to={isPublicPage ? "/#scanners" : "/dashboard"}
+          >
+            {isPublicPage ? "Back to Home" : "Dashboard"}
           </Link>
         </div>
 

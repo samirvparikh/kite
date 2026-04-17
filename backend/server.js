@@ -26,8 +26,10 @@ app.get('/api', (req, res) => {
     res.json({
         ok: true,
         endpoints: [
-            'GET /login',
-            'GET /callback',
+            'GET /api/login',
+            'GET /api/callback',
+            'GET /login (legacy alias)',
+            'GET /callback (legacy alias)',
             'GET /api/kite/user/profile',
             'GET /api/kite/user/margins',
             'GET /api/kite/portfolio/holdings',
@@ -38,11 +40,16 @@ app.get('/api', (req, res) => {
             'GET /api/scan/nifty50-930-breakout?date=YYYY-MM-DD',
             'GET /api/scan/nifty-option-bias?wings=5&expiry=YYYY-MM-DD (optional)',
         ],
-        auth: 'Send header: Authorization: Bearer <access_token> (except /login, /callback)',
+        auth: 'Send header: Authorization: Bearer <access_token> (except /api/login, /api/callback)',
     });
 });
 
 const API_KEY = process.env.API_KEY?.trim();
+const FRONTEND_BASE_URL = (
+    process.env.FRONTEND_BASE_URL ||
+    process.env.FRONTEND_URL ||
+    'http://127.0.0.1:5173'
+).trim();
 
 async function kiteGet(req, res, endpoint) {
     const auth = req.headers.authorization;
@@ -1718,15 +1725,28 @@ app.get('/api/scan/nifty-option-bias', async (req, res) => {
 });
 
 // Step 1: Get login URL
-app.get('/login', (req, res) => {
+function handleLogin(req, res) {
     const loginUrl = `https://kite.trade/connect/login?api_key=${process.env.API_KEY}&v=3`;
     res.json({ url: loginUrl });
-});
+}
+app.get('/api/login', handleLogin);
+app.get('/login', handleLogin); // Backward-compatible alias.
 
 
 // Step 2: Handle callback (exchange request_token)
-app.get('/callback', async (req, res) => {
+async function handleCallback(req, res) {
     const request_token = req.query.request_token;
+    const status = String(req.query.status || '').trim().toLowerCase();
+    const action = String(req.query.action || '').trim().toLowerCase();
+
+    // If Kite redirects user directly to backend callback URL, forward browser
+    // to frontend callback so SPA can continue its normal dashboard flow.
+    if (status === 'success' && action === 'login' && request_token) {
+        const redirectUrl = new URL('/callback', FRONTEND_BASE_URL);
+        redirectUrl.searchParams.set('request_token', String(request_token));
+        redirectUrl.searchParams.set('status', 'success');
+        return res.redirect(302, redirectUrl.toString());
+    }
 
     const apiKey = process.env.API_KEY.trim();
     const apiSecret = process.env.API_SECRET.trim();
@@ -1762,10 +1782,12 @@ app.get('/callback', async (req, res) => {
         console.error(error.response?.data);
         res.status(500).json({ error: error.response?.data || error.message });
     }
-});
+}
+app.get('/api/callback', handleCallback);
+app.get('/callback', handleCallback); // Backward-compatible alias.
 
 
-app.get('/check-env', (req, res) => {
+app.get('/api/check-env', (req, res) => {
     res.json({
         api_key: process.env.API_KEY,
         api_secret: process.env.API_SECRET,
