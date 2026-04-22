@@ -141,7 +141,7 @@ export const Sidebar: React.FC<Props> = ({ open, onClose }) => {
           active={breakout930}
           icon={<IconBreak930 />}
         >
-          9:30 Breakout
+          9:20 Breakout
         </Item>
         <Item
           to={`/nifty-option-bias?date=${d}`}

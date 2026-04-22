@@ -68,7 +68,7 @@ const ScannerStaticPage: React.FC<Props> = ({ title, description, imagePath }) =
             <h1 className="mt-3 text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">
               {title}
             </h1>
-            <p className="mt-4 text-base leading-relaxed text-slate-600">
+            <p className="mt-4 whitespace-pre-line text-base leading-relaxed text-slate-600">
               {description}
             </p>
             <div className="mt-6">
@@ -112,7 +112,7 @@ const ScannerStaticPage: React.FC<Props> = ({ title, description, imagePath }) =
 
       <footer className="border-t border-slate-100 bg-white py-8">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-4 text-sm text-slate-500 sm:flex-row sm:px-6 lg:px-8">
-          <span>© {new Date().getFullYear()} Inningstar · Not affiliated with Zerodha</span>
+          <span>© {new Date().getFullYear()} Inningstar · @samirvparikh</span>
           <div className="flex gap-6">
             <a
               href="https://kite.trade/docs/connect/v3/"

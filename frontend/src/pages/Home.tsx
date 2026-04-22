@@ -123,7 +123,7 @@ const Home: React.FC = () => {
                     9:20 Breakout
                   </Link>
                   <Link to="/scanners/9-30-breakout" className="rounded-lg px-3 py-2 hover:bg-slate-50" onClick={() => setMenuOpen(false)}>
-                    9:30 Breakout
+                    9:20 Breakout
                   </Link>
                   <Link to="/scanners/ce-pe-bias" className="rounded-lg px-3 py-2 hover:bg-slate-50" onClick={() => setMenuOpen(false)}>
                     CE / PE bias
@@ -376,7 +376,7 @@ const Home: React.FC = () => {
 
       <footer className="border-t border-slate-100 bg-white py-8">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-4 text-sm text-slate-500 sm:flex-row sm:px-6 lg:px-8">
-          <span>© {new Date().getFullYear()} Inningstar · Not affiliated with Zerodha</span>
+          <span>© {new Date().getFullYear()} Inningstar · @samirvparikh</span>
           <div className="flex gap-6">
             <a
               href="https://kite.trade/docs/connect/v3/"

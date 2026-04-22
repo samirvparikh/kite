@@ -38,6 +38,7 @@ app.get('/api', (req, res) => {
             'GET /api/kite/quote?i=NSE:INFY&i=...',
             'GET /api/scan/nifty50-920-breakout?date=YYYY-MM-DD',
             'GET /api/scan/nifty50-930-breakout?date=YYYY-MM-DD',
+            'GET /api/scan/nse-oi-momentum-breakout?date=YYYY-MM-DD',
             'GET /api/scan/nifty-option-bias?wings=5&expiry=YYYY-MM-DD (optional)',
         ],
         auth: 'Send header: Authorization: Bearer <access_token> (except /api/login, /api/callback)',
@@ -514,6 +515,45 @@ async function fetchNseCorporateActionsBySymbol(selectedDate, symbols) {
     } catch {
         return out;
     }
+}
+
+function normalizeNseSymbol(raw) {
+    return String(raw ?? '')
+        .trim()
+        .toUpperCase()
+        .replace(/^NSE:/, '')
+        .replace(/-EQ$/, '');
+}
+
+async function fetchNseJson(url, referer) {
+    const ua =
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+    const home = await axios.get('https://www.nseindia.com', {
+        headers: {
+            'User-Agent': ua,
+            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+    });
+    const rawCookies = home.headers?.['set-cookie'];
+    const cookieHeader = Array.isArray(rawCookies)
+        ? rawCookies.map((c) => c.split(';')[0]).join('; ')
+        : '';
+    const res = await axios.get(url, {
+        headers: {
+            'User-Agent': ua,
+            Accept: 'application/json, text/plain, */*',
+            Referer: referer || 'https://www.nseindia.com/',
+            Cookie: cookieHeader,
+        },
+        timeout: 20000,
+    });
+    return res.data;
+}
+
+function pickRows(data) {
+    if (Array.isArray(data)) return data;
+    if (Array.isArray(data?.data)) return data.data;
+    return [];
 }
 
 function timePartFromCandleStamp(stamp) {
@@ -1489,6 +1529,231 @@ app.get('/api/scan/nifty50-930-breakout', async (req, res) => {
         errorRows,
         totalSymbols: NIFTY50_SYMBOLS.length,
     });
+});
+
+/**
+ * NSE OI + momentum + 09:30 breakout shortlist.
+ * date=YYYY-MM-DD (today or past sessions for breakout backfill).
+ */
+app.get('/api/scan/nse-oi-momentum-breakout', async (req, res) => {
+    const accessToken = getBearerToken(req);
+    if (!accessToken) {
+        return res.status(401).json({ error: 'Missing access token' });
+    }
+    if (!API_KEY) {
+        return res.status(500).json({ error: 'API_KEY not configured' });
+    }
+
+    const todayIST = istDateString();
+    const rawQueryDate =
+        typeof req.query.date === 'string' ? req.query.date.trim() : '';
+    const selectedDate = normalizeCalendarYmd(rawQueryDate) || todayIST;
+    const isToday = selectedDate === todayIST;
+    const isFutureDate = selectedDate > todayIST;
+    if (isFutureDate) {
+        return res.json({
+            selectedDate,
+            todayIST,
+            isFutureDate: true,
+            candidates: [],
+            finalPicks: [],
+            meta: { oiSourceRows: 0, gainersRows: 0, losersRows: 0 },
+        });
+    }
+
+    try {
+        const [oiJson, gJson, lJson] = await Promise.all([
+            fetchNseJson(
+                'https://www.nseindia.com/api/live-analysis-oi-spurts-underlyings',
+                'https://www.nseindia.com/market-data/oi-spurts'
+            ),
+            fetchNseJson(
+                'https://www.nseindia.com/api/live-analysis-variations?index=gainers',
+                'https://www.nseindia.com/market-data/top-gainers-losers'
+            ),
+            fetchNseJson(
+                'https://www.nseindia.com/api/live-analysis-variations?index=loosers',
+                'https://www.nseindia.com/market-data/top-gainers-losers'
+            ),
+        ]);
+
+        const oiRowsRaw = pickRows(oiJson);
+        const gainersRaw = pickRows(gJson);
+        const losersRaw = pickRows(lJson);
+
+        const oiRows = oiRowsRaw
+            .map((r) => {
+                const symbol = normalizeNseSymbol(
+                    r?.symbol ?? r?.underlying ?? r?.name
+                );
+                const oiChangePct = parseFloat(
+                    r?.pchangeinopeninterest ??
+                        r?.pChangeInOI ??
+                        r?.percChangeOI ??
+                        r?.perChangeinOI ??
+                        NaN
+                );
+                return { symbol, oiChangePct };
+            })
+            .filter((r) => r.symbol && Number.isFinite(r.oiChangePct));
+
+        const gainers = gainersRaw
+            .map((r) => ({
+                symbol: normalizeNseSymbol(r?.symbol ?? r?.name),
+                priceChangePct: parseFloat(
+                    r?.pChange ?? r?.percentChange ?? r?.change ?? NaN
+                ),
+            }))
+            .filter((r) => r.symbol && Number.isFinite(r.priceChangePct))
+            .sort((a, b) => b.priceChangePct - a.priceChangePct)
+            .slice(0, 3);
+
+        const losers = losersRaw
+            .map((r) => ({
+                symbol: normalizeNseSymbol(r?.symbol ?? r?.name),
+                priceChangePct: parseFloat(
+                    r?.pChange ?? r?.percentChange ?? r?.change ?? NaN
+                ),
+            }))
+            .filter((r) => r.symbol && Number.isFinite(r.priceChangePct))
+            .sort((a, b) => a.priceChangePct - b.priceChangePct)
+            .slice(0, 3);
+
+        const oiBull = [...oiRows]
+            .sort((a, b) => b.oiChangePct - a.oiChangePct)
+            .slice(0, 5);
+        const oiBear = [...oiRows]
+            .sort((a, b) => a.oiChangePct - b.oiChangePct)
+            .slice(0, 5);
+
+        const gSet = new Set(gainers.map((x) => x.symbol));
+        const lSet = new Set(losers.map((x) => x.symbol));
+        const oiMap = new Map();
+        for (const r of oiBull) oiMap.set(r.symbol, r.oiChangePct);
+        for (const r of oiBear) oiMap.set(r.symbol, r.oiChangePct);
+        for (const r of gainers) if (!oiMap.has(r.symbol)) oiMap.set(r.symbol, null);
+        for (const r of losers) if (!oiMap.has(r.symbol)) oiMap.set(r.symbol, null);
+
+        const symbols = [...oiMap.keys()];
+        const quoteMap = await fetchQuoteMapForSymbols(accessToken, symbols);
+
+        const candidates = [];
+        const errorRows = [];
+        for (const symbol of symbols) {
+            const key = `NSE:${symbol}`;
+            const token = quoteMap[key]?.instrument_token;
+            if (token == null || token === '') {
+                errorRows.push({ symbol, reason: 'Instrument token not found' });
+                continue;
+            }
+            let candles;
+            try {
+                candles = await fetchKite5MinuteCandlesForDay(
+                    accessToken,
+                    token,
+                    selectedDate
+                );
+            } catch (e) {
+                errorRows.push({
+                    symbol,
+                    reason: e.response?.data?.message || e.message || 'History error',
+                });
+                continue;
+            }
+            if (!Array.isArray(candles) || candles.length === 0) continue;
+
+            const rangeBars = barsBetweenTimeInclusive(candles, '09:15:00', '09:30:00');
+            if (rangeBars.length === 0) continue;
+            const rangeHigh = Math.max(...rangeBars.map((c) => parseFloat(c?.[2] ?? NaN)));
+            const rangeLow = Math.min(...rangeBars.map((c) => parseFloat(c?.[3] ?? NaN)));
+            if (!Number.isFinite(rangeHigh) || !Number.isFinite(rangeLow)) continue;
+
+            let refPrice = NaN;
+            if (isToday) {
+                refPrice = parseFloat(quoteMap[key]?.last_price ?? NaN);
+            } else {
+                refPrice = parseFloat(candles[candles.length - 1]?.[4] ?? NaN);
+            }
+            if (!Number.isFinite(refPrice)) continue;
+
+            const prevClose = isToday
+                ? parseFloat(quoteMap[key]?.ohlc?.close ?? NaN)
+                : await fetchPrevCloseForDay(accessToken, token, selectedDate).catch(() => null);
+            const priceChangePct =
+                prevClose && Number.isFinite(prevClose) && prevClose !== 0
+                    ? ((refPrice - prevClose) / prevClose) * 100
+                    : null;
+            const session = calcSessionOhlcvFrom5m(candles);
+            const volumeShares = session?.volume ?? null;
+
+            let signal = 'WAIT';
+            if (refPrice > rangeHigh) signal = 'BUY';
+            else if (refPrice < rangeLow) signal = 'SELL';
+
+            const inGainers = gSet.has(symbol);
+            const inLosers = lSet.has(symbol);
+            const oiChangePct = oiMap.get(symbol);
+            const setup =
+                inGainers && (oiChangePct ?? 0) > 0
+                    ? 'Bullish Setup'
+                    : inLosers && (oiChangePct ?? 0) < 0
+                    ? 'Bearish Setup'
+                    : 'Neutral';
+
+            candidates.push({
+                symbol,
+                oiChangePct,
+                priceChangePct,
+                setup,
+                signal,
+                entry: signal === 'BUY' ? rangeHigh : signal === 'SELL' ? rangeLow : null,
+                stopLoss:
+                    signal === 'BUY' ? rangeLow : signal === 'SELL' ? rangeHigh : null,
+                target: '5-20 points intraday',
+                breakoutHigh: rangeHigh,
+                breakoutLow: rangeLow,
+                refPrice,
+                volumeShares,
+                inGainers,
+                inLosers,
+            });
+        }
+
+        const ranked = [...candidates].sort((a, b) => {
+            const score = (x) => {
+                let s = 0;
+                if (x.signal !== 'WAIT') s += 5;
+                if (x.inGainers || x.inLosers) s += 3;
+                if (x.setup !== 'Neutral') s += 3;
+                if (Number.isFinite(x.oiChangePct)) s += Math.min(4, Math.abs(x.oiChangePct) / 10);
+                if (Number.isFinite(x.priceChangePct)) s += Math.min(3, Math.abs(x.priceChangePct) / 2);
+                if (Number.isFinite(x.volumeShares) && x.volumeShares > 1000000) s += 2;
+                return s;
+            };
+            return score(b) - score(a);
+        });
+
+        const finalPicks = ranked.filter((r) => r.signal !== 'WAIT').slice(0, 6);
+
+        return res.json({
+            selectedDate,
+            todayIST,
+            isFutureDate: false,
+            candidates: ranked,
+            finalPicks,
+            errorRows,
+            meta: {
+                oiSourceRows: oiRows.length,
+                gainersRows: gainersRaw.length,
+                losersRows: losersRaw.length,
+            },
+        });
+    } catch (error) {
+        console.error(error.response?.data || error.message);
+        return res.status(error.response?.status || 500).json(
+            error.response?.data || { error: error.message }
+        );
+    }
 });
 
 /**
