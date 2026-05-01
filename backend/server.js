@@ -2,6 +2,9 @@ const crypto = require('crypto');
 const qs = require('qs');
 const express = require('express');
 const axios = require('axios');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const mysql = require('mysql2/promise');
 require('dotenv').config();
 const cors = require('cors');
 const {
@@ -26,6 +29,9 @@ app.get('/api', (req, res) => {
     res.json({
         ok: true,
         endpoints: [
+            'POST /api/auth/register',
+            'POST /api/auth/login',
+            'GET /api/auth/me',
             'GET /api/login',
             'GET /api/callback',
             'GET /login (legacy alias)',
@@ -41,23 +47,200 @@ app.get('/api', (req, res) => {
             'GET /api/scan/nse-oi-momentum-breakout?date=YYYY-MM-DD',
             'GET /api/scan/nifty-option-bias?wings=5&expiry=YYYY-MM-DD (optional)',
         ],
-        auth: 'Send header: Authorization: Bearer <access_token> (except /api/login, /api/callback)',
+        auth: 'Send header: Authorization: Bearer <app_token>. Legacy direct Kite token also supported.',
     });
 });
 
 const API_KEY = process.env.API_KEY?.trim();
+const JWT_SECRET = (process.env.JWT_SECRET || 'change-me-in-env').trim();
+const AUTH_TOKEN_TTL = process.env.AUTH_TOKEN_TTL || '7d';
 const FRONTEND_BASE_URL = (
     process.env.FRONTEND_BASE_URL ||
     process.env.FRONTEND_URL ||
     'http://127.0.0.1:5173'
 ).trim();
 
+const MYSQL_PORT = Number(process.env.DB_PORT || 3306);
+const db = mysql.createPool({
+    host: process.env.DB_HOST || '127.0.0.1',
+    user: process.env.DB_USER || 'root',
+    password: process.env.DB_PASSWORD || '',
+    database: process.env.DB_NAME || 'trading',
+    port: Number.isFinite(MYSQL_PORT) ? MYSQL_PORT : 3306,
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+});
+
+async function initDb() {
+    await db.query(`
+        CREATE TABLE IF NOT EXISTS users (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            username VARCHAR(64) NOT NULL UNIQUE,
+            email VARCHAR(191) NOT NULL UNIQUE,
+            password_hash VARCHAR(255) NOT NULL,
+            kite_user_id VARCHAR(64) NULL,
+            kite_access_token VARCHAR(255) NULL,
+            kite_public_token VARCHAR(255) NULL,
+            kite_token_updated_at DATETIME NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )
+    `);
+}
+
+function issueAppToken(userId) {
+    return jwt.sign({ userId }, JWT_SECRET, { expiresIn: AUTH_TOKEN_TTL });
+}
+
+function getBearerRaw(req) {
+    const auth = req.headers.authorization;
+    return auth && auth.startsWith('Bearer ') ? auth.slice(7).trim() : null;
+}
+
+function toPublicUser(row) {
+    if (!row) return null;
+    return {
+        id: row.id,
+        username: row.username,
+        email: row.email,
+        kiteConnected: Boolean(row.kite_access_token),
+    };
+}
+
+async function hydrateAuthUser(req, _res, next) {
+    req.authUser = null;
+    req.kiteAccessToken = null;
+    const bearer = getBearerRaw(req);
+    if (!bearer) return next();
+    try {
+        const payload = jwt.verify(bearer, JWT_SECRET);
+        if (!payload?.userId) return next();
+        const [rows] = await db.query(
+            'SELECT id, username, email, kite_access_token FROM users WHERE id = ? LIMIT 1',
+            [payload.userId]
+        );
+        const row = rows?.[0] ?? null;
+        if (!row) return next();
+        req.authUser = {
+            id: row.id,
+            username: row.username,
+            email: row.email,
+        };
+        req.kiteAccessToken = row.kite_access_token || null;
+    } catch {
+        // Keep backward compatibility: raw Kite token in Authorization header.
+    }
+    return next();
+}
+
+function requireAuth(req, res, next) {
+    if (!req.authUser) {
+        return res.status(401).json({ error: 'Please login first' });
+    }
+    return next();
+}
+
+app.use(hydrateAuthUser);
+
+app.post('/api/auth/register', async (req, res) => {
+    const username = String(req.body?.username ?? '').trim();
+    const email = String(req.body?.email ?? '').trim().toLowerCase();
+    const password = String(req.body?.password ?? '');
+
+    if (!username || !email || !password) {
+        return res
+            .status(400)
+            .json({ error: 'username, email and password are required' });
+    }
+    if (password.length < 6) {
+        return res
+            .status(400)
+            .json({ error: 'Password must be at least 6 characters' });
+    }
+
+    try {
+        const [existing] = await db.query(
+            'SELECT id FROM users WHERE username = ? OR email = ? LIMIT 1',
+            [username, email]
+        );
+        if (existing?.length) {
+            return res
+                .status(409)
+                .json({ error: 'Username or email already exists' });
+        }
+
+        const passwordHash = await bcrypt.hash(password, 10);
+        const [result] = await db.query(
+            'INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
+            [username, email, passwordHash]
+        );
+        const token = issueAppToken(result.insertId);
+        const [rows] = await db.query(
+            'SELECT id, username, email, kite_access_token FROM users WHERE id = ? LIMIT 1',
+            [result.insertId]
+        );
+        return res.status(201).json({
+            token,
+            user: toPublicUser(rows?.[0] ?? null),
+        });
+    } catch (error) {
+        console.error(error.message);
+        return res.status(500).json({ error: 'Failed to register user' });
+    }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+    const identifier = String(req.body?.identifier ?? '').trim();
+    const password = String(req.body?.password ?? '');
+    if (!identifier || !password) {
+        return res.status(400).json({ error: 'identifier and password are required' });
+    }
+    try {
+        const [rows] = await db.query(
+            'SELECT id, username, email, password_hash, kite_access_token FROM users WHERE email = ? OR username = ? LIMIT 1',
+            [identifier.toLowerCase(), identifier]
+        );
+        const row = rows?.[0] ?? null;
+        if (!row) {
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+        const ok = await bcrypt.compare(password, row.password_hash);
+        if (!ok) {
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+        const token = issueAppToken(row.id);
+        return res.json({
+            token,
+            user: toPublicUser(row),
+        });
+    } catch (error) {
+        console.error(error.message);
+        return res.status(500).json({ error: 'Failed to login' });
+    }
+});
+
+app.get('/api/auth/me', requireAuth, async (req, res) => {
+    try {
+        const [rows] = await db.query(
+            'SELECT id, username, email, kite_access_token FROM users WHERE id = ? LIMIT 1',
+            [req.authUser.id]
+        );
+        return res.json({ user: toPublicUser(rows?.[0] ?? null) });
+    } catch (error) {
+        console.error(error.message);
+        return res.status(500).json({ error: 'Failed to fetch user info' });
+    }
+});
+
 async function kiteGet(req, res, endpoint) {
     const auth = req.headers.authorization;
     const accessToken =
         auth && auth.startsWith('Bearer ') ? auth.slice(7).trim() : null;
     if (!accessToken) {
-        return res.status(401).json({ error: 'Missing access token' });
+        return res.status(401).json({
+            error: 'Kite API not connected. Please connect Zerodha from login page.',
+        });
     }
     if (!API_KEY) {
         return res.status(500).json({ error: 'API_KEY not configured' });
@@ -94,7 +277,9 @@ app.get('/api/kite/portfolio/positions', (req, res) =>
 app.post('/api/kite/orders', async (req, res) => {
     const accessToken = getBearerToken(req);
     if (!accessToken) {
-        return res.status(401).json({ error: 'Missing access token' });
+        return res.status(401).json({
+            error: 'Kite API not connected. Please connect Zerodha from login page.',
+        });
     }
     if (!API_KEY) {
         return res.status(500).json({ error: 'API_KEY not configured' });
@@ -147,8 +332,9 @@ app.post('/api/kite/orders', async (req, res) => {
 });
 
 function getBearerToken(req) {
-    const auth = req.headers.authorization;
-    return auth && auth.startsWith('Bearer ') ? auth.slice(7).trim() : null;
+    const fromUser = req.kiteAccessToken;
+    if (fromUser) return fromUser;
+    return getBearerRaw(req);
 }
 
 function istDateString(d = new Date()) {
@@ -816,7 +1002,9 @@ const marketRouter = express.Router();
 marketRouter.get('/nifty50-scanner', async (req, res) => {
     const accessToken = getBearerToken(req);
     if (!accessToken) {
-        return res.status(401).json({ error: 'Missing access token' });
+        return res.status(401).json({
+            error: 'Kite API not connected. Please connect Zerodha from login page.',
+        });
     }
     if (!API_KEY) {
         return res.status(500).json({ error: 'API_KEY not configured' });
@@ -1054,7 +1242,9 @@ app.use('/api/market', marketRouter);
 app.get('/api/kite/quote', async (req, res) => {
     const accessToken = getBearerToken(req);
     if (!accessToken) {
-        return res.status(401).json({ error: 'Missing access token' });
+        return res.status(401).json({
+            error: 'Kite API not connected. Please connect Zerodha from login page.',
+        });
     }
     if (!API_KEY) {
         return res.status(500).json({ error: 'API_KEY not configured' });
@@ -1085,7 +1275,9 @@ app.get('/api/kite/quote', async (req, res) => {
 app.get('/api/kite/instruments/historical/:token/minute', async (req, res) => {
     const accessToken = getBearerToken(req);
     if (!accessToken) {
-        return res.status(401).json({ error: 'Missing access token' });
+        return res.status(401).json({
+            error: 'Kite API not connected. Please connect Zerodha from login page.',
+        });
     }
     if (!API_KEY) {
         return res.status(500).json({ error: 'API_KEY not configured' });
@@ -1115,7 +1307,9 @@ app.get('/api/kite/instruments/historical/:token/minute', async (req, res) => {
 app.get('/api/scan/nifty50-920-breakout', async (req, res) => {
     const accessToken = getBearerToken(req);
     if (!accessToken) {
-        return res.status(401).json({ error: 'Missing access token' });
+        return res.status(401).json({
+            error: 'Kite API not connected. Please connect Zerodha from login page.',
+        });
     }
     if (!API_KEY) {
         return res.status(500).json({ error: 'API_KEY not configured' });
@@ -1291,7 +1485,9 @@ app.get('/api/scan/nifty50-920-breakout', async (req, res) => {
 app.get('/api/scan/nifty50-930-breakout', async (req, res) => {
     const accessToken = getBearerToken(req);
     if (!accessToken) {
-        return res.status(401).json({ error: 'Missing access token' });
+        return res.status(401).json({
+            error: 'Kite API not connected. Please connect Zerodha from login page.',
+        });
     }
     if (!API_KEY) {
         return res.status(500).json({ error: 'API_KEY not configured' });
@@ -1538,7 +1734,9 @@ app.get('/api/scan/nifty50-930-breakout', async (req, res) => {
 app.get('/api/scan/nse-oi-momentum-breakout', async (req, res) => {
     const accessToken = getBearerToken(req);
     if (!accessToken) {
-        return res.status(401).json({ error: 'Missing access token' });
+        return res.status(401).json({
+            error: 'Kite API not connected. Please connect Zerodha from login page.',
+        });
     }
     if (!API_KEY) {
         return res.status(500).json({ error: 'API_KEY not configured' });
@@ -1763,7 +1961,9 @@ app.get('/api/scan/nse-oi-momentum-breakout', async (req, res) => {
 app.get('/api/scan/nifty-option-bias', async (req, res) => {
     const accessToken = getBearerToken(req);
     if (!accessToken) {
-        return res.status(401).json({ error: 'Missing access token' });
+        return res.status(401).json({
+            error: 'Kite API not connected. Please connect Zerodha from login page.',
+        });
     }
     if (!API_KEY) {
         return res.status(500).json({ error: 'API_KEY not configured' });
@@ -1991,6 +2191,9 @@ app.get('/api/scan/nifty-option-bias', async (req, res) => {
 
 // Step 1: Get login URL
 function handleLogin(req, res) {
+    if (!req.authUser) {
+        return res.status(401).json({ error: 'Please login first' });
+    }
     const loginUrl = `https://kite.trade/connect/login?api_key=${process.env.API_KEY}&v=3`;
     res.json({ url: loginUrl });
 }
@@ -2037,10 +2240,26 @@ async function handleCallback(req, res) {
         );
 
         const data = response.data;
+        const kiteData = data?.data || {};
+
+        if (req.authUser?.id) {
+            await db.query(
+                `UPDATE users
+                 SET kite_user_id = ?, kite_access_token = ?, kite_public_token = ?, kite_token_updated_at = NOW()
+                 WHERE id = ?`,
+                [
+                    String(kiteData.user_id || ''),
+                    String(kiteData.access_token || ''),
+                    String(kiteData.public_token || ''),
+                    req.authUser.id,
+                ]
+            );
+        }
 
         res.json({
-            access_token: data.data.access_token,
-            user: data.data
+            access_token: kiteData.access_token,
+            user: kiteData,
+            kiteConnected: true,
         });
 
     } catch (error) {
@@ -2062,7 +2281,14 @@ app.get('/api/check-env', (req, res) => {
 });
 
 const PORT = Number(process.env.PORT) || 5000;
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log('Market scanner: GET /api/market/nifty50-scanner');
-});
+initDb()
+    .then(() => {
+        app.listen(PORT, () => {
+            console.log(`Server running on port ${PORT}`);
+            console.log('Market scanner: GET /api/market/nifty50-scanner');
+        });
+    })
+    .catch((error) => {
+        console.error('Failed to initialize database:', error.message);
+        process.exit(1);
+    });

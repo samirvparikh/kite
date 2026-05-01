@@ -1,23 +1,81 @@
 import React, { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { BrandLogo } from "../components/BrandLogo";
 import API from "../services/api";
 
 const Login: React.FC = () => {
+  const navigate = useNavigate();
   const [bannerDismissed, setBannerDismissed] = useState(false);
+  const [isRegister, setIsRegister] = useState(false);
+  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [kiteLoading, setKiteLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleLogin = async () => {
+  const handleKiteLogin = async () => {
+    setError(null);
+    setKiteLoading(true);
     try {
       const res = await API.get<{ url: string }>("/api/login");
-      window.location.href = res.data.url;
-    } catch (error) {
-      console.error("Login error:", error);
+      window.location.assign(res.data.url);
+    } catch (e) {
+      const msg =
+        (e as { response?: { data?: { error?: string } } })?.response?.data
+          ?.error || "Kite login failed";
+      setError(msg);
+    } finally {
+      setKiteLoading(false);
+    }
+  };
+
+  const handleAppLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+    try {
+      const res = await API.post<{ token: string }>("/api/auth/login", {
+        identifier,
+        password,
+      });
+      localStorage.setItem("access_token", res.data.token);
+      navigate("/dashboard", { replace: true });
+    } catch (e) {
+      const msg =
+        (e as { response?: { data?: { error?: string } } })?.response?.data
+          ?.error || "Login failed";
+      setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+    try {
+      const res = await API.post<{ token: string }>("/api/auth/register", {
+        username,
+        email,
+        password,
+      });
+      localStorage.setItem("access_token", res.data.token);
+      navigate("/dashboard", { replace: true });
+    } catch (e) {
+      const msg =
+        (e as { response?: { data?: { error?: string } } })?.response?.data
+          ?.error || "Registration failed";
+      setError(msg);
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
     <div className="flex min-h-svh flex-col bg-slate-100/80 text-slate-900 antialiased">
-      {/* Top nav */}
       <header className="border-b border-slate-200/80 bg-white">
         <div className="mx-auto flex h-14 max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
           <Link
@@ -51,7 +109,6 @@ const Login: React.FC = () => {
         </div>
       </header>
 
-      {/* Promo banner */}
       {!bannerDismissed && (
         <div className="relative overflow-hidden bg-gradient-to-r from-violet-700 via-purple-700 to-indigo-800 px-4 py-2.5 text-white sm:px-6">
           <div
@@ -81,10 +138,8 @@ const Login: React.FC = () => {
         </div>
       )}
 
-      {/* Main two columns */}
       <main className="flex flex-1 flex-col justify-center px-4 py-10 sm:px-6 lg:py-14">
-        <div className="mx-auto grid w-full max-w-5xl gap-10 lg:grid-cols-2 lg:items-center lg:gap-16">
-          {/* Left: branding */}
+        <div className="mx-auto grid w-full max-w-5xl gap-10 lg:grid-cols-2 lg:items-top lg:gap-16">
           <div className="order-2 lg:order-1">
             <div className="flex items-start gap-3">
               <div className="shrink-0 rounded-lg border border-slate-100 bg-white p-1 shadow-sm">
@@ -155,20 +210,108 @@ const Login: React.FC = () => {
             </ul>
           </div>
 
-          {/* Right: login card */}
           <div className="order-1 lg:order-2">
             <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-lg shadow-slate-200/50 sm:p-8">
+              
+
+              <div className="mt-5 grid grid-cols-2 gap-2 rounded-lg bg-slate-100 p-1">
+                <button
+                  type="button"
+                  onClick={() => setIsRegister(false)}
+                  className={`rounded-md px-3 py-2 text-sm font-semibold ${!isRegister ? "bg-white text-slate-900 shadow-sm" : "text-slate-600"}`}
+                >
+                  Login form
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsRegister(true)}
+                  className={`rounded-md px-3 py-2 text-sm font-semibold ${isRegister ? "bg-white text-slate-900 shadow-sm" : "text-slate-600"}`}
+                >
+                  Register form
+                </button>
+              </div>
+
+              <form onSubmit={isRegister ? handleRegister : handleAppLogin} className="mt-4 space-y-3">
+                {isRegister ? (
+                  <>
+                    <input
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-brand-orange"
+                      placeholder="Username"
+                      required
+                    />
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-brand-orange"
+                      placeholder="Email"
+                      required
+                    />
+                  </>
+                ) : (
+                  <input
+                    value={identifier}
+                    onChange={(e) => setIdentifier(e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-brand-orange"
+                    placeholder="Username or Email"
+                    required
+                  />
+                )}
+
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-brand-orange"
+                  placeholder="Password"
+                  minLength={isRegister ? 6 : undefined}
+                  required
+                />
+
+                {error && (
+                  <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                    {error}
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full rounded-lg bg-brand-navy px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-brand-navy/90 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {loading
+                    ? isRegister
+                      ? "Creating account..."
+                      : "Logging in..."
+                    : isRegister
+                      ? "Register"
+                      : "Login"}
+                </button>
+              </form>
+
+              <div className="relative my-8">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-slate-200" />
+                </div>
+                <div className="relative flex justify-center text-xs font-medium uppercase tracking-wide text-slate-400">
+                  <span className="bg-white px-3">Or login with</span>
+                </div>
+              </div>
+
               <h2 className="text-lg font-bold text-slate-800 sm:text-xl">
                 Login with your broker
               </h2>
 
               <button
                 type="button"
-                onClick={handleLogin}
-                className="mt-6 flex w-full items-center justify-center gap-3 rounded-lg border-2 border-brand-orange/35 bg-[#f5821f0f] py-3.5 text-[15px] font-semibold text-slate-800 transition hover:border-brand-orange/50 hover:bg-[#f5821f18] focus:outline-none focus:ring-2 focus:ring-brand-orange/40 focus:ring-offset-2"
+                onClick={handleKiteLogin}
+                disabled={kiteLoading}
+                className="mt-6 flex w-full items-center justify-center gap-3 rounded-lg border-2 border-brand-orange/35 bg-[#f5821f0f] py-3.5 text-[15px] font-semibold text-slate-800 transition hover:border-brand-orange/50 hover:bg-[#f5821f18] focus:outline-none focus:ring-2 focus:ring-brand-orange/40 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-70"
               >
                 <ZerodhaMark className="h-8 w-8 shrink-0" />
-                Login with Zerodha
+                {kiteLoading ? "Opening Kite..." : "Login with Zerodha"}
               </button>
 
               <p className="mt-4 text-center text-sm text-slate-600">
@@ -182,15 +325,6 @@ const Login: React.FC = () => {
                   Open Now
                 </a>
               </p>
-
-              <div className="relative my-8">
-                <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-slate-200" />
-                </div>
-                <div className="relative flex justify-center text-xs font-medium uppercase tracking-wide text-slate-400">
-                  <span className="bg-white px-3">Or login with</span>
-                </div>
-              </div>
 
               <div className="space-y-3">
                 <BrokerRow label="Angel One" disabled />
@@ -252,7 +386,7 @@ const Login: React.FC = () => {
               .
             </p>
             <p className="mt-2 text-center text-[11px] text-slate-400">
-              Inningstar · dev build
+              @inningstar
             </p>
           </div>
         </div>
@@ -281,7 +415,6 @@ function BrokerRow({ label, disabled }: { label: string; disabled?: boolean }) {
   );
 }
 
-/** Simplified Zerodha-style mark (not official logo) */
 function ZerodhaMark({ className }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 32 32" fill="none" aria-hidden>

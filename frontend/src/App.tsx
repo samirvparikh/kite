@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Home from "./pages/Home";
 import Login from "./pages/Login";
+import Register from "./pages/Register";
 import Callback from "./pages/Callback";
 import Dashboard from "./pages/Dashboard";
 import Scanner from "./pages/Scanner";
@@ -23,6 +24,7 @@ const App: React.FC = () => {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<Register />} />
         <Route path="/callback" element={<Callback />} />
         <Route path="/chart" element={<Chart />} />
         <Route path="/scanners/5min-breakout" element={<Static5MinBreakout />} />
