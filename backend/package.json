@@ -5,6 +5,12 @@
   "main": "index.js",
   "scripts": {
     "start": "node server.js",
+    "db:create": "node scripts/create-tables.cjs",
+    "db:migrate-rbac": "node scripts/apply-rbac-migration.cjs",
+    "db:set-samir-admin": "node scripts/set-samir-admin.cjs",
+    "db:migrate-kite-refresh": "node scripts/apply-kite-refresh-table.cjs",
+    "db:migrate-kite-global": "node scripts/apply-kite-global-migration.cjs",
+    "db:migrate-kite-pending": "node scripts/apply-pending-request-token-columns.cjs",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

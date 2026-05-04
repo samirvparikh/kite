@@ -210,6 +210,15 @@ export const Header: React.FC<Props> = ({ onMenuClick }) => {
                 >
                   Dashboard
                 </Link>
+                {authStatus === "ok" && (
+                  <Link
+                    to="/register"
+                    className="block px-3 py-2 text-sm font-medium text-brand-navy hover:bg-slate-50"
+                    onClick={() => setMenuOpen(false)}
+                  >
+                    Create user
+                  </Link>
+                )}
                 <button
                   type="button"
                   className="w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"

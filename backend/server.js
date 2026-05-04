@@ -25,10 +25,30 @@ app.get('/', (req, res) => {
     });
 });
 
+/** Smoke test: process up + optional DB ping (safe for uptime monitors; no secrets). */
+app.get('/api/health', async (req, res) => {
+    const payload = {
+        ok: true,
+        service: 'inningstar-backend',
+        time: new Date().toISOString(),
+        database: 'unknown',
+    };
+    try {
+        await db.query('SELECT 1 AS health_check');
+        payload.database = 'connected';
+    } catch (e) {
+        payload.ok = false;
+        payload.database = 'error';
+        payload.databaseError = e.message || String(e);
+    }
+    res.status(payload.ok ? 200 : 503).json(payload);
+});
+
 app.get('/api', (req, res) => {
     res.json({
         ok: true,
         endpoints: [
+            'GET /api/health (process + MySQL ping)',
             'POST /api/auth/register',
             'POST /api/auth/login',
             'GET /api/auth/me',
@@ -46,8 +66,16 @@ app.get('/api', (req, res) => {
             'GET /api/scan/nifty50-930-breakout?date=YYYY-MM-DD',
             'GET /api/scan/nse-oi-momentum-breakout?date=YYYY-MM-DD',
             'GET /api/scan/nifty-option-bias?wings=5&expiry=YYYY-MM-DD (optional)',
+            'GET /api/admin/users (admin: admin.users)',
+            'GET /api/admin/users/:id (admin.users)',
+            'POST /api/admin/users { username, email, password, roleId? } (admin.users)',
+            'PATCH /api/admin/users/:id { roleId?, username?, email?, password? } (admin.users)',
+            'DELETE /api/admin/users/:id (admin.users)',
+            'GET /api/admin/roles (admin.roles)',
+            'GET /api/admin/permissions (admin.roles)',
+            'PUT /api/admin/roles/:id/permissions { permissionIds: number[] } (admin.roles)',
         ],
-        auth: 'Send header: Authorization: Bearer <app_token>. Legacy direct Kite token also supported.',
+        auth: 'Send header: Authorization: Bearer <app_token>. Legacy direct Kite token also supported. Zerodha access_token and refresh_token (if any) are stored once in table kite_global_session (id=1) for the whole app; renewed via Kite POST /session/refresh_token when the session is stale or after Kite API auth errors.',
     });
 });
 
@@ -59,6 +87,48 @@ const FRONTEND_BASE_URL = (
     process.env.FRONTEND_URL ||
     'http://127.0.0.1:5173'
 ).trim();
+const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+
+/** 1 if shared Kite access_token is set (kite_global_session row id = 1). */
+const SQL_EXPR_KITE_CONNECTED_GLOBAL = `IFNULL((SELECT CASE WHEN TRIM(IFNULL(g.kite_access_token,'')) != '' THEN 1 ELSE 0 END FROM kite_global_session g WHERE g.id = 1 LIMIT 1), 0)`;
+
+/** Binds Kite OAuth round-trip to an app user when the browser cannot send Authorization on redirect. */
+function createKiteOAuthState(userId) {
+    const uid = Number(userId);
+    if (!Number.isFinite(uid) || uid < 1) return null;
+    const exp = Date.now() + 15 * 60 * 1000;
+    const body = JSON.stringify({ userId: uid, exp });
+    const sig = crypto.createHmac('sha256', JWT_SECRET).update(body).digest('hex');
+    return Buffer.from(JSON.stringify({ userId: uid, exp, sig }), 'utf8').toString(
+        'base64url'
+    );
+}
+
+function verifyKiteOAuthState(state) {
+    if (!state || typeof state !== 'string') return null;
+    try {
+        const json = JSON.parse(
+            Buffer.from(String(state).trim(), 'base64url').toString('utf8')
+        );
+        if (!json || typeof json.exp !== 'number' || typeof json.sig !== 'string') {
+            return null;
+        }
+        const uid = Number(json.userId);
+        if (!Number.isFinite(uid) || uid < 1) return null;
+        if (Date.now() > json.exp) return null;
+        const body = JSON.stringify({ userId: uid, exp: json.exp });
+        const expect = crypto
+            .createHmac('sha256', JWT_SECRET)
+            .update(body)
+            .digest('hex');
+        const a = Buffer.from(json.sig, 'hex');
+        const b = Buffer.from(expect, 'hex');
+        if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+        return uid;
+    } catch {
+        return null;
+    }
+}
 
 const MYSQL_PORT = Number(process.env.DB_PORT || 3306);
 const db = mysql.createPool({
@@ -72,6 +142,99 @@ const db = mysql.createPool({
     queueLimit: 0,
 });
 
+const PERMISSION_SEEDS = [
+    ['Dashboard', 'menu.dashboard', 'Open Dashboard'],
+    ['Positions', 'menu.positions', 'Open Positions'],
+    ['Scanner', 'menu.scanner', 'Market scanner pages'],
+    ['9:20 Breakout', 'menu.nifty920', 'NIFTY 9:20 breakout'],
+    ['9:30 Breakout', 'menu.nifty930', 'NIFTY 9:30 breakout'],
+    ['CE / PE bias', 'menu.optionbias', 'Option bias'],
+    ['My Today Choice', 'menu.mytoday', 'My today choice'],
+    ['Users', 'admin.users', 'Manage users and roles assignment'],
+    ['Roles & permissions', 'admin.roles', 'Edit role permissions'],
+];
+
+async function ensureUsersRoleColumn() {
+    const [cols] = await db.query(
+        `SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'role_id'`
+    );
+    const c = Number(cols?.[0]?.c ?? 0);
+    if (c === 0) {
+        await db.query(
+            `ALTER TABLE users ADD COLUMN role_id BIGINT UNSIGNED NULL AFTER password_hash`
+        );
+    }
+}
+
+async function seedRbac() {
+    await db.query(`
+        CREATE TABLE IF NOT EXISTS roles (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(64) NOT NULL,
+            slug VARCHAR(32) NOT NULL UNIQUE,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    `);
+    await db.query(`
+        CREATE TABLE IF NOT EXISTS permissions (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(128) NOT NULL,
+            slug VARCHAR(128) NOT NULL UNIQUE,
+            description VARCHAR(255) NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    `);
+    await db.query(`
+        CREATE TABLE IF NOT EXISTS role_permissions (
+            role_id BIGINT UNSIGNED NOT NULL,
+            permission_id BIGINT UNSIGNED NOT NULL,
+            PRIMARY KEY (role_id, permission_id),
+            CONSTRAINT rp_role_fk FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE,
+            CONSTRAINT rp_perm_fk FOREIGN KEY (permission_id) REFERENCES permissions(id) ON DELETE CASCADE
+        )
+    `);
+
+    await db.query(
+        `INSERT IGNORE INTO roles (name, slug) VALUES ('Admin', 'admin'), ('User', 'user')`
+    );
+
+    for (const [name, slug, description] of PERMISSION_SEEDS) {
+        await db.query(
+            `INSERT IGNORE INTO permissions (name, slug, description) VALUES (?, ?, ?)`,
+            [name, slug, description]
+        );
+    }
+
+    const [adminRows] = await db.query(
+        `SELECT id FROM roles WHERE slug = 'admin' LIMIT 1`
+    );
+    const [userRows] = await db.query(
+        `SELECT id FROM roles WHERE slug = 'user' LIMIT 1`
+    );
+    const adminId = adminRows?.[0]?.id;
+    const userId = userRows?.[0]?.id;
+    if (!adminId || !userId) return;
+
+    const [permRows] = await db.query(`SELECT id, slug FROM permissions`);
+    const menuSlugs = new Set(
+        PERMISSION_SEEDS.filter(([, s]) => s.startsWith('menu.')).map(([, s]) => s)
+    );
+
+    for (const p of permRows) {
+        await db.query(
+            `INSERT IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)`,
+            [adminId, p.id]
+        );
+        if (menuSlugs.has(p.slug)) {
+            await db.query(
+                `INSERT IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)`,
+                [userId, p.id]
+            );
+        }
+    }
+}
+
 async function initDb() {
     await db.query(`
         CREATE TABLE IF NOT EXISTS users (
@@ -80,13 +243,310 @@ async function initDb() {
             email VARCHAR(191) NOT NULL UNIQUE,
             password_hash VARCHAR(255) NOT NULL,
             kite_user_id VARCHAR(64) NULL,
-            kite_access_token VARCHAR(255) NULL,
-            kite_public_token VARCHAR(255) NULL,
-            kite_token_updated_at DATETIME NULL,
+            kite_pending_request_token VARCHAR(512) NULL,
+            kite_pending_request_token_at DATETIME NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         )
     `);
+    await seedRbac();
+    await ensureUsersRoleColumn();
+    const [defRoleRows] = await db.query(
+        `SELECT id FROM roles WHERE slug = 'user' LIMIT 1`
+    );
+    const defRid = defRoleRows?.[0]?.id;
+    if (defRid) {
+        await db.query(`UPDATE users SET role_id = ? WHERE role_id IS NULL`, [
+            defRid,
+        ]);
+    }
+    await ensureKiteGlobalSessionTable();
+    await ensureUserPendingRequestTokenColumns();
+    await migrateKiteTokensToGlobalAndDropLegacy();
+}
+
+async function ensureKiteGlobalSessionTable() {
+    await db.query(`
+        CREATE TABLE IF NOT EXISTS kite_global_session (
+            id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
+            kite_user_id VARCHAR(64) NULL,
+            kite_access_token VARCHAR(512) NULL,
+            kite_public_token VARCHAR(512) NULL,
+            refresh_token TEXT NULL,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )
+    `);
+    await db.query(`INSERT IGNORE INTO kite_global_session (id) VALUES (1)`);
+}
+
+/** One-time: move per-user Kite columns + refresh_tokens into kite_global_session, then drop legacy. */
+async function migrateKiteTokensToGlobalAndDropLegacy() {
+    const [colCheck] = await db.query(
+        `SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'
+           AND COLUMN_NAME = 'kite_access_token'`
+    );
+    if (Number(colCheck?.[0]?.c ?? 0) === 0) {
+        return;
+    }
+
+    try {
+        await db.query(`
+            UPDATE kite_global_session dest
+            INNER JOIN (
+                SELECT kite_access_token, kite_public_token, kite_user_id
+                FROM users
+                WHERE kite_access_token IS NOT NULL
+                  AND TRIM(kite_access_token) != ''
+                ORDER BY id DESC
+                LIMIT 1
+            ) src ON dest.id = 1
+            SET dest.kite_access_token = COALESCE(
+                    NULLIF(TRIM(dest.kite_access_token), ''),
+                    src.kite_access_token
+                ),
+                dest.kite_public_token = COALESCE(
+                    src.kite_public_token,
+                    dest.kite_public_token
+                ),
+                dest.kite_user_id = COALESCE(
+                    NULLIF(TRIM(src.kite_user_id), ''),
+                    dest.kite_user_id
+                )
+        `);
+    } catch (e) {
+        console.error('migrate kite access to global:', e.message);
+    }
+
+    try {
+        const [krOnly] = await db.query(
+            `SELECT COUNT(*) AS c FROM information_schema.tables
+             WHERE table_schema = DATABASE() AND table_name = 'kite_refresh_tokens'`
+        );
+        const [rtExistsPre] = await db.query(
+            `SELECT COUNT(*) AS c FROM information_schema.tables
+             WHERE table_schema = DATABASE() AND table_name = 'refresh_tokens'`
+        );
+        if (
+            Number(krOnly?.[0]?.c ?? 0) > 0 &&
+            Number(rtExistsPre?.[0]?.c ?? 0) === 0
+        ) {
+            await db.query(
+                `RENAME TABLE kite_refresh_tokens TO refresh_tokens`
+            );
+        }
+        const [tExists] = await db.query(
+            `SELECT COUNT(*) AS c FROM information_schema.tables
+             WHERE table_schema = DATABASE() AND table_name = 'refresh_tokens'`
+        );
+        if (Number(tExists?.[0]?.c ?? 0) > 0) {
+            const [rrows] = await db.query(
+                `SELECT refresh_token FROM refresh_tokens
+                 WHERE refresh_token IS NOT NULL AND TRIM(refresh_token) != ''
+                 ORDER BY updated_at DESC LIMIT 1`
+            );
+            const rt = rrows?.[0]?.refresh_token;
+            if (rt) {
+                await db.query(
+                    `UPDATE kite_global_session SET refresh_token = ?
+                     WHERE id = 1 AND (refresh_token IS NULL OR TRIM(refresh_token) = '')`,
+                    [String(rt).trim()]
+                );
+            }
+            await db.query(`DROP TABLE IF EXISTS refresh_tokens`);
+        }
+    } catch (e) {
+        console.error('migrate refresh_tokens:', e.message);
+    }
+
+    for (const col of [
+        'kite_access_token',
+        'kite_public_token',
+        'kite_token_updated_at',
+    ]) {
+        try {
+            await db.query(`ALTER TABLE users DROP COLUMN \`${col}\``);
+        } catch (_) {
+            /* already dropped */
+        }
+    }
+}
+
+const KITE_REQUEST_TOKEN_TTL_MINUTES = Math.min(
+    15,
+    Math.max(
+        1,
+        parseInt(process.env.KITE_REQUEST_TOKEN_TTL_MINUTES || '5', 10) || 5
+    )
+);
+
+async function ensureUserPendingRequestTokenColumns() {
+    const [cols] = await db.query(
+        `SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'kite_pending_request_token'`
+    );
+    if (Number(cols?.[0]?.c ?? 0) === 0) {
+        await db.query(
+            `ALTER TABLE users
+             ADD COLUMN kite_pending_request_token VARCHAR(512) NULL AFTER kite_user_id,
+             ADD COLUMN kite_pending_request_token_at DATETIME NULL AFTER kite_pending_request_token`
+        );
+    }
+}
+
+function istCalendarYmdIst(value) {
+    if (value == null || value === '') return '';
+    const d = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+}
+
+function shouldRenewKiteAccessWithRefresh(lastUpdated, hasAccessToken) {
+    if (!hasAccessToken) return true;
+    const lastDay = istCalendarYmdIst(lastUpdated);
+    const today = istCalendarYmdIst(new Date());
+    return !lastDay || lastDay < today;
+}
+
+async function exchangeKiteSessionFromRequestToken(requestToken) {
+    const rt = String(requestToken || '').trim();
+    if (!rt || !API_KEY || !process.env.API_SECRET?.trim()) {
+        throw new Error('Missing request_token or API credentials');
+    }
+    const apiKey = API_KEY.trim();
+    const apiSecret = process.env.API_SECRET.trim();
+    const checksum = crypto
+        .createHash('sha256')
+        .update(apiKey + rt + apiSecret)
+        .digest('hex');
+    const response = await axios.post(
+        'https://api.kite.trade/session/token',
+        qs.stringify({
+            api_key: apiKey,
+            request_token: rt,
+            checksum,
+        }),
+        {
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'X-Kite-Version': '3',
+            },
+        }
+    );
+    return response.data?.data || null;
+}
+
+async function clearPendingKiteRequestToken(userId) {
+    await db.query(
+        `UPDATE users SET kite_pending_request_token = NULL, kite_pending_request_token_at = NULL WHERE id = ?`,
+        [userId]
+    );
+}
+
+async function renewKiteWithRefresh(refreshToken) {
+    const rt = String(refreshToken || '').trim();
+    if (!rt || !API_KEY || !process.env.API_SECRET?.trim()) return null;
+    const apiKey = API_KEY.trim();
+    const apiSecret = process.env.API_SECRET.trim();
+    const checksum = crypto
+        .createHash('sha256')
+        .update(apiKey + rt + apiSecret)
+        .digest('hex');
+    try {
+        const response = await axios.post(
+            'https://api.kite.trade/session/refresh_token',
+            qs.stringify({
+                api_key: apiKey,
+                refresh_token: rt,
+                checksum,
+            }),
+            {
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'X-Kite-Version': '3',
+                },
+            }
+        );
+        return response.data?.data || response.data || null;
+    } catch (e) {
+        console.error(
+            'Kite refresh_token renew failed:',
+            e.response?.data || e.message
+        );
+        return null;
+    }
+}
+
+/** Store Kite session on shared row (id=1) for all app users; clear this user's pending OAuth. */
+async function persistKiteTokensForUser(userId, kiteData) {
+    const access = String(kiteData.access_token || '').trim();
+    if (!access) return;
+    const pub = String(kiteData.public_token || '').trim();
+    const uidK = String(kiteData.user_id || '').trim();
+    const rt = String(kiteData.refresh_token || '').trim();
+    const parts = [
+        'kite_access_token = ?',
+        'kite_public_token = ?',
+        'kite_user_id = COALESCE(NULLIF(?, \'\'), kite_user_id)',
+        'updated_at = CURRENT_TIMESTAMP',
+    ];
+    const params = [access, pub || null, uidK];
+    if (rt) {
+        parts.push('refresh_token = ?');
+        params.push(rt);
+    }
+    await db.query(
+        `UPDATE kite_global_session SET ${parts.join(', ')} WHERE id = 1`,
+        params
+    );
+    if (userId > 0 && uidK) {
+        await db.query(
+            `UPDATE users SET kite_user_id = COALESCE(NULLIF(?, ''), kite_user_id) WHERE id = ?`,
+            [uidK, userId]
+        );
+    }
+    if (userId > 0) {
+        await clearPendingKiteRequestToken(userId);
+    }
+}
+
+/** After Kite returns 401/403, try Zerodha refresh_token → new access_token and persist globally. */
+async function tryRefreshKiteAccessGlobal() {
+    const [rows] = await db.query(
+        `SELECT refresh_token FROM kite_global_session WHERE id = 1 LIMIT 1`
+    );
+    const refresh = rows?.[0]?.refresh_token;
+    const rt = refresh ? String(refresh).trim() : '';
+    if (!rt) return null;
+    const renewed = await renewKiteWithRefresh(rt);
+    if (renewed?.access_token) {
+        await persistKiteTokensForUser(0, renewed);
+        return String(renewed.access_token).trim();
+    }
+    return null;
+}
+
+/** Clear shared Kite credentials (all users must reconnect Zerodha). */
+async function clearKiteTokensGlobal() {
+    await db.query(
+        `UPDATE kite_global_session
+         SET kite_access_token = NULL,
+             kite_public_token = NULL,
+             refresh_token = NULL,
+             kite_user_id = NULL,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = 1`
+    );
+}
+
+function kiteResponseLooksLikeBadToken(status, data) {
+    if (status === 401) return true;
+    if (status !== 403) return false;
+    const blob =
+        typeof data === 'string'
+            ? data
+            : JSON.stringify(data == null ? {} : data);
+    return /token|authentication|credential|expired|invalid|session/i.test(blob);
 }
 
 function issueAppToken(userId) {
@@ -100,11 +560,15 @@ function getBearerRaw(req) {
 
 function toPublicUser(row) {
     if (!row) return null;
+    const kc =
+        row.kite_connected !== undefined && row.kite_connected !== null
+            ? Boolean(Number(row.kite_connected))
+            : Boolean(row.kite_access_token);
     return {
         id: row.id,
         username: row.username,
         email: row.email,
-        kiteConnected: Boolean(row.kite_access_token),
+        kiteConnected: kc,
     };
 }
 
@@ -117,17 +581,97 @@ async function hydrateAuthUser(req, _res, next) {
         const payload = jwt.verify(bearer, JWT_SECRET);
         if (!payload?.userId) return next();
         const [rows] = await db.query(
-            'SELECT id, username, email, kite_access_token FROM users WHERE id = ? LIMIT 1',
+            `SELECT u.id, u.username, u.email,
+                    u.kite_pending_request_token, u.kite_pending_request_token_at,
+                    u.role_id, r.slug AS role_slug
+             FROM users u
+             LEFT JOIN roles r ON r.id = u.role_id
+             WHERE u.id = ? LIMIT 1`,
             [payload.userId]
         );
         const row = rows?.[0] ?? null;
         if (!row) return next();
+        const [gRows] = await db.query(
+            `SELECT kite_access_token, refresh_token, updated_at
+             FROM kite_global_session WHERE id = 1 LIMIT 1`
+        );
+        const g = gRows?.[0] ?? null;
+        let permissions = [];
+        const roleSlug = row.role_slug || 'user';
+        if (roleSlug === 'admin') {
+            const [pRows] = await db.query(`SELECT slug FROM permissions`);
+            permissions = (pRows || []).map((p) => p.slug);
+        } else if (row.role_id) {
+            const [pRows] = await db.query(
+                `SELECT p.slug FROM permissions p
+                 INNER JOIN role_permissions rp ON rp.permission_id = p.id AND rp.role_id = ?`,
+                [row.role_id]
+            );
+            permissions = (pRows || []).map((p) => p.slug);
+        }
         req.authUser = {
             id: row.id,
             username: row.username,
             email: row.email,
+            roleId: row.role_id,
+            roleSlug,
+            permissions,
         };
-        req.kiteAccessToken = row.kite_access_token || null;
+        let access = g?.kite_access_token
+            ? String(g.kite_access_token).trim()
+            : '';
+        const pendingRt = row.kite_pending_request_token
+            ? String(row.kite_pending_request_token).trim()
+            : '';
+        const pendingAt = row.kite_pending_request_token_at;
+        let pendingFresh = false;
+        if (pendingRt && pendingAt) {
+            const t = new Date(pendingAt);
+            if (!Number.isNaN(t.getTime())) {
+                const ageMs = Date.now() - t.getTime();
+                pendingFresh =
+                    ageMs >= 0 &&
+                    ageMs <= KITE_REQUEST_TOKEN_TTL_MINUTES * 60 * 1000;
+            }
+        }
+        if (access && pendingRt) {
+            await clearPendingKiteRequestToken(row.id);
+        } else if (!access && pendingRt && pendingFresh) {
+            try {
+                const fromReq = await exchangeKiteSessionFromRequestToken(
+                    pendingRt
+                );
+                if (fromReq?.access_token) {
+                    await persistKiteTokensForUser(row.id, fromReq);
+                    access = String(fromReq.access_token).trim();
+                }
+            } catch (e) {
+                console.error(
+                    'Kite request_token exchange (from DB) failed:',
+                    e.response?.data || e.message
+                );
+            }
+        } else if (pendingRt && !pendingFresh) {
+            await clearPendingKiteRequestToken(row.id);
+        }
+        const refreshRaw = g?.refresh_token
+            ? String(g.refresh_token).trim()
+            : '';
+        const hasRefresh = Boolean(refreshRaw);
+        if (hasRefresh && API_KEY && process.env.API_SECRET?.trim()) {
+            const needBecauseEmpty = !access;
+            const needByIstDay =
+                Boolean(access) &&
+                shouldRenewKiteAccessWithRefresh(g.updated_at, true);
+            if (needBecauseEmpty || needByIstDay) {
+                const renewed = await renewKiteWithRefresh(refreshRaw);
+                if (renewed?.access_token) {
+                    await persistKiteTokensForUser(row.id, renewed);
+                    access = String(renewed.access_token).trim();
+                }
+            }
+        }
+        req.kiteAccessToken = access || null;
     } catch {
         // Keep backward compatibility: raw Kite token in Authorization header.
     }
@@ -139,6 +683,22 @@ function requireAuth(req, res, next) {
         return res.status(401).json({ error: 'Please login first' });
     }
     return next();
+}
+
+function requirePermission(...required) {
+    return (req, res, next) => {
+        if (!req.authUser) {
+            return res.status(401).json({ error: 'Please login first' });
+        }
+        if (req.authUser.roleSlug === 'admin') return next();
+        const ok = required.some((slug) =>
+            req.authUser.permissions.includes(slug)
+        );
+        if (!ok) {
+            return res.status(403).json({ error: 'Forbidden' });
+        }
+        return next();
+    };
 }
 
 app.use(hydrateAuthUser);
@@ -171,13 +731,21 @@ app.post('/api/auth/register', async (req, res) => {
         }
 
         const passwordHash = await bcrypt.hash(password, 10);
+        const wantAdmin =
+            ADMIN_EMAIL && email.toLowerCase() === ADMIN_EMAIL;
+        const [rolePick] = await db.query(
+            `SELECT id FROM roles WHERE slug = ? LIMIT 1`,
+            [wantAdmin ? 'admin' : 'user']
+        );
+        const roleId = rolePick?.[0]?.id ?? null;
         const [result] = await db.query(
-            'INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
-            [username, email, passwordHash]
+            'INSERT INTO users (username, email, password_hash, role_id) VALUES (?, ?, ?, ?)',
+            [username, email, passwordHash, roleId]
         );
         const token = issueAppToken(result.insertId);
         const [rows] = await db.query(
-            'SELECT id, username, email, kite_access_token FROM users WHERE id = ? LIMIT 1',
+            `SELECT u.id, u.username, u.email, ${SQL_EXPR_KITE_CONNECTED_GLOBAL} AS kite_connected
+             FROM users u WHERE u.id = ? LIMIT 1`,
             [result.insertId]
         );
         return res.status(201).json({
@@ -198,7 +766,9 @@ app.post('/api/auth/login', async (req, res) => {
     }
     try {
         const [rows] = await db.query(
-            'SELECT id, username, email, password_hash, kite_access_token FROM users WHERE email = ? OR username = ? LIMIT 1',
+            `SELECT u.id, u.username, u.email, u.password_hash, u.role_id,
+                    ${SQL_EXPR_KITE_CONNECTED_GLOBAL} AS kite_connected
+             FROM users u WHERE u.email = ? OR u.username = ? LIMIT 1`,
             [identifier.toLowerCase(), identifier]
         );
         const row = rows?.[0] ?? null;
@@ -208,6 +778,19 @@ app.post('/api/auth/login', async (req, res) => {
         const ok = await bcrypt.compare(password, row.password_hash);
         if (!ok) {
             return res.status(401).json({ error: 'Invalid credentials' });
+        }
+        if (ADMIN_EMAIL && String(row.email || '').toLowerCase() === ADMIN_EMAIL) {
+            const [arows] = await db.query(
+                `SELECT id FROM roles WHERE slug = 'admin' LIMIT 1`
+            );
+            const adminRid = arows?.[0]?.id;
+            if (adminRid && row.role_id !== adminRid) {
+                await db.query(`UPDATE users SET role_id = ? WHERE id = ?`, [
+                    adminRid,
+                    row.id,
+                ]);
+                row.role_id = adminRid;
+            }
         }
         const token = issueAppToken(row.id);
         return res.json({
@@ -223,41 +806,459 @@ app.post('/api/auth/login', async (req, res) => {
 app.get('/api/auth/me', requireAuth, async (req, res) => {
     try {
         const [rows] = await db.query(
-            'SELECT id, username, email, kite_access_token FROM users WHERE id = ? LIMIT 1',
+            `SELECT u.id, u.username, u.email, r.slug AS role_slug, r.name AS role_name,
+                    ${SQL_EXPR_KITE_CONNECTED_GLOBAL} AS kite_connected
+             FROM users u
+             LEFT JOIN roles r ON r.id = u.role_id
+             WHERE u.id = ? LIMIT 1`,
             [req.authUser.id]
         );
-        return res.json({ user: toPublicUser(rows?.[0] ?? null) });
+        const row = rows?.[0] ?? null;
+        if (!row) {
+            return res.status(401).json({ error: 'Please login first' });
+        }
+        const base = toPublicUser(row);
+        return res.json({
+            user: {
+                ...base,
+                role: row.role_slug
+                    ? { slug: row.role_slug, name: row.role_name }
+                    : { slug: 'user', name: 'User' },
+                permissions: req.authUser.permissions || [],
+            },
+        });
     } catch (error) {
         console.error(error.message);
         return res.status(500).json({ error: 'Failed to fetch user info' });
     }
 });
 
+app
+    .route('/api/admin/users')
+    .get(requireAuth, requirePermission('admin.users'), async (req, res) => {
+        try {
+            const [rows] = await db.query(
+                `SELECT u.id, u.username, u.email, u.role_id, r.slug AS role_slug, r.name AS role_name,
+                        ${SQL_EXPR_KITE_CONNECTED_GLOBAL} AS kite_connected
+                 FROM users u
+                 LEFT JOIN roles r ON r.id = u.role_id
+                 ORDER BY u.id ASC`
+            );
+            const [roleRows] = await db.query(
+                `SELECT id, name, slug FROM roles ORDER BY id ASC`
+            );
+            return res.json({ users: rows, roles: roleRows });
+        } catch (error) {
+            console.error(error.message);
+            return res.status(500).json({ error: 'Failed to list users' });
+        }
+    })
+    .post(requireAuth, requirePermission('admin.users'), async (req, res) => {
+        const username = String(req.body?.username ?? '').trim();
+        const email = String(req.body?.email ?? '').trim().toLowerCase();
+        const password = String(req.body?.password ?? '');
+        let roleId = parseInt(String(req.body?.roleId ?? ''), 10);
+        if (!username || !email || !password) {
+            return res.status(400).json({
+                error: 'username, email and password are required',
+            });
+        }
+        if (password.length < 6) {
+            return res.status(400).json({
+                error: 'Password must be at least 6 characters',
+            });
+        }
+        if (!Number.isFinite(roleId) || roleId <= 0) {
+            const [ur] = await db.query(
+                `SELECT id FROM roles WHERE slug = 'user' LIMIT 1`
+            );
+            roleId = ur?.[0]?.id;
+            if (!roleId) {
+                return res.status(500).json({ error: 'Default role missing' });
+            }
+        }
+        try {
+            const [rrows] = await db.query(
+                `SELECT id FROM roles WHERE id = ? LIMIT 1`,
+                [roleId]
+            );
+            if (!rrows?.[0]) {
+                return res.status(400).json({ error: 'Invalid role' });
+            }
+            const [existing] = await db.query(
+                'SELECT id FROM users WHERE username = ? OR email = ? LIMIT 1',
+                [username, email]
+            );
+            if (existing?.length) {
+                return res
+                    .status(409)
+                    .json({ error: 'Username or email already exists' });
+            }
+            const passwordHash = await bcrypt.hash(password, 10);
+            const [result] = await db.query(
+                'INSERT INTO users (username, email, password_hash, role_id) VALUES (?, ?, ?, ?)',
+                [username, email, passwordHash, roleId]
+            );
+            const newId = result.insertId;
+            const [rows] = await db.query(
+                `SELECT u.id, u.username, u.email, u.role_id, r.slug AS role_slug, r.name AS role_name,
+                        ${SQL_EXPR_KITE_CONNECTED_GLOBAL} AS kite_connected
+                 FROM users u
+                 LEFT JOIN roles r ON r.id = u.role_id
+                 WHERE u.id = ? LIMIT 1`,
+                [newId]
+            );
+            return res.status(201).json({ user: rows?.[0] });
+        } catch (error) {
+            console.error(error.message);
+            return res.status(500).json({ error: 'Failed to create user' });
+        }
+    });
+
+app.get(
+    '/api/admin/users/:id',
+    requireAuth,
+    requirePermission('admin.users'),
+    async (req, res) => {
+        const id = parseInt(String(req.params.id), 10);
+        if (!Number.isFinite(id) || id <= 0) {
+            return res.status(400).json({ error: 'Invalid user id' });
+        }
+        try {
+            const [rows] = await db.query(
+                `SELECT u.id, u.username, u.email, u.role_id, r.slug AS role_slug, r.name AS role_name,
+                        ${SQL_EXPR_KITE_CONNECTED_GLOBAL} AS kite_connected
+                 FROM users u
+                 LEFT JOIN roles r ON r.id = u.role_id
+                 WHERE u.id = ? LIMIT 1`,
+                [id]
+            );
+            const row = rows?.[0] ?? null;
+            if (!row) {
+                return res.status(404).json({ error: 'User not found' });
+            }
+            return res.json({ user: row });
+        } catch (error) {
+            console.error(error.message);
+            return res.status(500).json({ error: 'Failed to load user' });
+        }
+    }
+);
+
+app.patch(
+    '/api/admin/users/:id',
+    requireAuth,
+    requirePermission('admin.users'),
+    async (req, res) => {
+        const id = parseInt(String(req.params.id), 10);
+        if (!Number.isFinite(id) || id <= 0) {
+            return res.status(400).json({ error: 'Invalid user id' });
+        }
+
+        const usernameRaw = req.body?.username;
+        const emailRaw = req.body?.email;
+        const passwordRaw = req.body?.password;
+        const roleIdRaw = req.body?.roleId;
+
+        const sets = [];
+        const params = [];
+
+        if (
+            roleIdRaw !== undefined &&
+            roleIdRaw !== null &&
+            String(roleIdRaw).trim() !== ''
+        ) {
+            const roleId = parseInt(String(roleIdRaw), 10);
+            if (!Number.isFinite(roleId) || roleId <= 0) {
+                return res.status(400).json({ error: 'Invalid roleId' });
+            }
+            const [rrows] = await db.query(
+                `SELECT id FROM roles WHERE id = ? LIMIT 1`,
+                [roleId]
+            );
+            if (!rrows?.[0]) {
+                return res.status(400).json({ error: 'Invalid role' });
+            }
+            sets.push('role_id = ?');
+            params.push(roleId);
+        }
+
+        if (usernameRaw !== undefined) {
+            const username = String(usernameRaw).trim();
+            if (!username) {
+                return res.status(400).json({ error: 'username cannot be empty' });
+            }
+            const [dup] = await db.query(
+                'SELECT id FROM users WHERE username = ? AND id != ? LIMIT 1',
+                [username, id]
+            );
+            if (dup?.length) {
+                return res.status(409).json({ error: 'Username already taken' });
+            }
+            sets.push('username = ?');
+            params.push(username);
+        }
+
+        if (emailRaw !== undefined) {
+            const email = String(emailRaw).trim().toLowerCase();
+            if (!email) {
+                return res.status(400).json({ error: 'email cannot be empty' });
+            }
+            const [dup] = await db.query(
+                'SELECT id FROM users WHERE email = ? AND id != ? LIMIT 1',
+                [email, id]
+            );
+            if (dup?.length) {
+                return res.status(409).json({ error: 'Email already taken' });
+            }
+            sets.push('email = ?');
+            params.push(email);
+        }
+
+        if (passwordRaw !== undefined && String(passwordRaw).length > 0) {
+            if (String(passwordRaw).length < 6) {
+                return res.status(400).json({
+                    error: 'Password must be at least 6 characters',
+                });
+            }
+            const passwordHash = await bcrypt.hash(String(passwordRaw), 10);
+            sets.push('password_hash = ?');
+            params.push(passwordHash);
+        }
+
+        if (sets.length === 0) {
+            return res.status(400).json({ error: 'No fields to update' });
+        }
+
+        try {
+            params.push(id);
+            const [upd] = await db.query(
+                `UPDATE users SET ${sets.join(', ')} WHERE id = ?`,
+                params
+            );
+            if (upd.affectedRows === 0) {
+                return res.status(404).json({ error: 'User not found' });
+            }
+            const [rows] = await db.query(
+                `SELECT u.id, u.username, u.email, u.role_id, r.slug AS role_slug, r.name AS role_name,
+                        ${SQL_EXPR_KITE_CONNECTED_GLOBAL} AS kite_connected
+                 FROM users u
+                 LEFT JOIN roles r ON r.id = u.role_id
+                 WHERE u.id = ? LIMIT 1`,
+                [id]
+            );
+            return res.json({ user: rows?.[0] });
+        } catch (error) {
+            console.error(error.message);
+            return res.status(500).json({ error: 'Failed to update user' });
+        }
+    }
+);
+
+app.delete(
+    '/api/admin/users/:id',
+    requireAuth,
+    requirePermission('admin.users'),
+    async (req, res) => {
+        const id = parseInt(String(req.params.id), 10);
+        if (!Number.isFinite(id) || id <= 0) {
+            return res.status(400).json({ error: 'Invalid user id' });
+        }
+        if (id === req.authUser.id) {
+            return res
+                .status(400)
+                .json({ error: 'Cannot delete your own account' });
+        }
+        try {
+            const [del] = await db.query(`DELETE FROM users WHERE id = ?`, [
+                id,
+            ]);
+            if (del.affectedRows === 0) {
+                return res.status(404).json({ error: 'User not found' });
+            }
+            return res.json({ ok: true });
+        } catch (error) {
+            console.error(error.message);
+            return res.status(500).json({ error: 'Failed to delete user' });
+        }
+    }
+);
+
+app.get(
+    '/api/admin/roles',
+    requireAuth,
+    requirePermission('admin.roles'),
+    async (_req, res) => {
+        try {
+            const [rows] = await db.query(
+                `SELECT r.id, r.name, r.slug,
+                        (SELECT COUNT(*) FROM role_permissions rp WHERE rp.role_id = r.id) AS permission_count
+                 FROM roles r ORDER BY r.id ASC`
+            );
+            return res.json({ roles: rows });
+        } catch (error) {
+            console.error(error.message);
+            return res.status(500).json({ error: 'Failed to list roles' });
+        }
+    }
+);
+
+app.get(
+    '/api/admin/permissions',
+    requireAuth,
+    requirePermission('admin.roles'),
+    async (_req, res) => {
+        try {
+            const [rows] = await db.query(
+                `SELECT id, name, slug, description FROM permissions ORDER BY slug ASC`
+            );
+            return res.json({ permissions: rows });
+        } catch (error) {
+            console.error(error.message);
+            return res.status(500).json({ error: 'Failed to list permissions' });
+        }
+    }
+);
+
+app.get(
+    '/api/admin/roles/:id/permissions',
+    requireAuth,
+    requirePermission('admin.roles'),
+    async (req, res) => {
+        const id = parseInt(String(req.params.id), 10);
+        if (!Number.isFinite(id) || id <= 0) {
+            return res.status(400).json({ error: 'Invalid role id' });
+        }
+        try {
+            const [rrows2] = await db.query(
+                `SELECT id, name, slug FROM roles WHERE id = ? LIMIT 1`,
+                [id]
+            );
+            const role = rrows2?.[0];
+            if (!role) {
+                return res.status(404).json({ error: 'Role not found' });
+            }
+            const [permRows] = await db.query(
+                `SELECT p.id FROM permissions p
+                 INNER JOIN role_permissions rp ON rp.permission_id = p.id AND rp.role_id = ?`,
+                [id]
+            );
+            return res.json({
+                role,
+                permissionIds: (permRows || []).map((p) => p.id),
+            });
+        } catch (error) {
+            console.error(error.message);
+            return res.status(500).json({ error: 'Failed to load role' });
+        }
+    }
+);
+
+app.put(
+    '/api/admin/roles/:id/permissions',
+    requireAuth,
+    requirePermission('admin.roles'),
+    async (req, res) => {
+        const id = parseInt(String(req.params.id), 10);
+        const rawIds = req.body?.permissionIds;
+        if (!Number.isFinite(id) || id <= 0) {
+            return res.status(400).json({ error: 'Invalid role id' });
+        }
+        if (!Array.isArray(rawIds)) {
+            return res.status(400).json({ error: 'permissionIds must be an array' });
+        }
+        const permissionIds = rawIds
+            .map((x) => parseInt(String(x), 10))
+            .filter((n) => Number.isFinite(n) && n > 0);
+        const uniqueIds = [...new Set(permissionIds)];
+        try {
+            const [rrows3] = await db.query(
+                `SELECT id, slug FROM roles WHERE id = ? LIMIT 1`,
+                [id]
+            );
+            const role = rrows3?.[0];
+            if (!role) {
+                return res.status(404).json({ error: 'Role not found' });
+            }
+            if (role.slug === 'admin') {
+                return res.status(400).json({
+                    error: 'Admin role always has full access; it cannot be edited here.',
+                });
+            }
+            const conn = await db.getConnection();
+            try {
+                await conn.beginTransaction();
+                await conn.query(`DELETE FROM role_permissions WHERE role_id = ?`, [
+                    id,
+                ]);
+                for (const pid of uniqueIds) {
+                    await conn.query(
+                        `INSERT INTO role_permissions (role_id, permission_id) VALUES (?, ?)`,
+                        [id, pid]
+                    );
+                }
+                await conn.commit();
+            } catch (e) {
+                await conn.rollback();
+                throw e;
+            } finally {
+                conn.release();
+            }
+            return res.json({ ok: true });
+        } catch (error) {
+            console.error(error.message);
+            return res.status(500).json({ error: 'Failed to update role' });
+        }
+    }
+);
+
 async function kiteGet(req, res, endpoint) {
-    const auth = req.headers.authorization;
-    const accessToken =
-        auth && auth.startsWith('Bearer ') ? auth.slice(7).trim() : null;
+    let accessToken = getBearerToken(req);
     if (!accessToken) {
         return res.status(401).json({
             error: 'Kite API not connected. Please connect Zerodha from login page.',
+            kiteReconnectRequired: true,
         });
     }
     if (!API_KEY) {
         return res.status(500).json({ error: 'API_KEY not configured' });
     }
-    try {
-        const response = await axios.get(`https://api.kite.trade/${endpoint}`, {
+    const apiKey = API_KEY.trim();
+    const doReq = (tok) =>
+        axios.get(`https://api.kite.trade/${endpoint}`, {
             headers: {
                 'X-Kite-Version': '3',
-                Authorization: `token ${API_KEY}:${accessToken}`,
+                Authorization: `token ${apiKey}:${tok}`,
             },
         });
+    try {
+        const response = await doReq(accessToken);
         res.json(response.data);
     } catch (error) {
+        const status = error.response?.status;
+        const data = error.response?.data;
+        if (req.authUser?.id && kiteResponseLooksLikeBadToken(status, data)) {
+            const newTok = await tryRefreshKiteAccessGlobal();
+            if (newTok) {
+                req.kiteAccessToken = newTok;
+                try {
+                    const response2 = await doReq(newTok);
+                    return res.json(response2.data);
+                } catch (e2) {
+                    console.error(e2.response?.data || e2.message);
+                    return res.status(e2.response?.status || 500).json(
+                        e2.response?.data || { error: e2.message }
+                    );
+                }
+            }
+            await clearKiteTokensGlobal();
+            return res.status(401).json({
+                error: 'Kite session expired. Connect Zerodha from the login page again.',
+                kiteReconnectRequired: true,
+            });
+        }
         console.error(error.response?.data || error.message);
-        res.status(error.response?.status || 500).json(
-            error.response?.data || { error: error.message }
-        );
+        res.status(status || 500).json(data || { error: error.message });
     }
 }
 
@@ -275,15 +1276,17 @@ app.get('/api/kite/portfolio/positions', (req, res) =>
 );
 
 app.post('/api/kite/orders', async (req, res) => {
-    const accessToken = getBearerToken(req);
+    let accessToken = getBearerToken(req);
     if (!accessToken) {
         return res.status(401).json({
             error: 'Kite API not connected. Please connect Zerodha from login page.',
+            kiteReconnectRequired: true,
         });
     }
     if (!API_KEY) {
         return res.status(500).json({ error: 'API_KEY not configured' });
     }
+    const apiKey = API_KEY.trim();
     const tradingsymbol = String(req.body?.tradingsymbol ?? '').trim().toUpperCase();
     const exchange = String(req.body?.exchange ?? 'NSE').trim().toUpperCase();
     const qtyRaw = parseInt(String(req.body?.quantity ?? '1'), 10);
@@ -310,30 +1313,50 @@ app.post('/api/kite/orders', async (req, res) => {
         validity: 'DAY',
     });
 
+    const doOrder = (tok) =>
+        axios.post('https://api.kite.trade/orders/regular', payload, {
+            headers: {
+                'X-Kite-Version': '3',
+                Authorization: `token ${apiKey}:${tok}`,
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+        });
     try {
-        const response = await axios.post(
-            'https://api.kite.trade/orders/regular',
-            payload,
-            {
-                headers: {
-                    'X-Kite-Version': '3',
-                    Authorization: `token ${API_KEY}:${accessToken}`,
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                },
-            }
-        );
+        const response = await doOrder(accessToken);
         return res.json(response.data);
     } catch (error) {
+        const status = error.response?.status;
+        const data = error.response?.data;
+        if (req.authUser?.id && kiteResponseLooksLikeBadToken(status, data)) {
+            const newTok = await tryRefreshKiteAccessGlobal();
+            if (newTok) {
+                req.kiteAccessToken = newTok;
+                try {
+                    const response2 = await doOrder(newTok);
+                    return res.json(response2.data);
+                } catch (e2) {
+                    console.error(e2.response?.data || e2.message);
+                    return res.status(e2.response?.status || 500).json(
+                        e2.response?.data || { error: e2.message }
+                    );
+                }
+            }
+            await clearKiteTokensGlobal();
+            return res.status(401).json({
+                error: 'Kite session expired. Connect Zerodha from the login page again.',
+                kiteReconnectRequired: true,
+            });
+        }
         console.error(error.response?.data || error.message);
-        return res.status(error.response?.status || 500).json(
-            error.response?.data || { error: error.message }
-        );
+        return res.status(status || 500).json(data || { error: error.message });
     }
 });
 
 function getBearerToken(req) {
     const fromUser = req.kiteAccessToken;
     if (fromUser) return fromUser;
+    // App JWT in Authorization must never be sent to Kite as an access token.
+    if (req.authUser) return null;
     return getBearerRaw(req);
 }
 
@@ -2189,12 +3212,17 @@ app.get('/api/scan/nifty-option-bias', async (req, res) => {
     });
 });
 
-// Step 1: Get login URL
+// Step 1: Get Kite Connect login URL (no app JWT required — public OAuth entry).
 function handleLogin(req, res) {
-    if (!req.authUser) {
-        return res.status(401).json({ error: 'Please login first' });
+    if (!API_KEY) {
+        return res.status(500).json({ error: 'API_KEY not configured' });
     }
-    const loginUrl = `https://kite.trade/connect/login?api_key=${process.env.API_KEY}&v=3`;
+    let loginUrl = `https://kite.trade/connect/login?api_key=${API_KEY}&v=3`;
+    const kiteState =
+        req.authUser?.id != null ? createKiteOAuthState(req.authUser.id) : null;
+    if (kiteState) {
+        loginUrl += `&state=${encodeURIComponent(kiteState)}`;
+    }
     res.json({ url: loginUrl });
 }
 app.get('/api/login', handleLogin);
@@ -2213,47 +3241,58 @@ async function handleCallback(req, res) {
         const redirectUrl = new URL('/callback', FRONTEND_BASE_URL);
         redirectUrl.searchParams.set('request_token', String(request_token));
         redirectUrl.searchParams.set('status', 'success');
+        const st = req.query.state;
+        if (st) {
+            redirectUrl.searchParams.set(
+                'state',
+                String(Array.isArray(st) ? st[0] : st)
+            );
+        }
         return res.redirect(302, redirectUrl.toString());
     }
 
-    const apiKey = process.env.API_KEY.trim();
-    const apiSecret = process.env.API_SECRET.trim();
+    if (!request_token || !String(request_token).trim()) {
+        return res.status(400).json({ error: 'request_token is required' });
+    }
+    const rt = String(request_token).trim();
 
-    const checksum = crypto
-        .createHash('sha256')
-        .update(apiKey + request_token + apiSecret)
-        .digest('hex');
+    const rawState = req.query.state;
+    const stateParam =
+        typeof rawState === 'string'
+            ? rawState
+            : Array.isArray(rawState)
+              ? rawState[0]
+              : '';
+    let callbackUserId = verifyKiteOAuthState(stateParam) || req.authUser?.id || null;
+
+    if (callbackUserId) {
+        await db.query(
+            `UPDATE users SET kite_pending_request_token = ?, kite_pending_request_token_at = NOW() WHERE id = ?`,
+            [rt, callbackUserId]
+        );
+    }
 
     try {
-        const response = await axios.post(
-            'https://api.kite.trade/session/token',
-            qs.stringify({
-                api_key: apiKey,
-                request_token: request_token,
-                checksum: checksum
-            }),
-            {
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded'
-                }
+        const kiteData = await exchangeKiteSessionFromRequestToken(rt);
+
+        let persistUserId = callbackUserId;
+        if (!persistUserId && kiteData?.user_id) {
+            const ku = String(kiteData.user_id).trim();
+            if (ku) {
+                const [m] = await db.query(
+                    `SELECT id FROM users WHERE kite_user_id = ? LIMIT 1`,
+                    [ku]
+                );
+                persistUserId = m?.[0]?.id ?? null;
             }
-        );
+        }
 
-        const data = response.data;
-        const kiteData = data?.data || {};
-
-        if (req.authUser?.id) {
-            await db.query(
-                `UPDATE users
-                 SET kite_user_id = ?, kite_access_token = ?, kite_public_token = ?, kite_token_updated_at = NOW()
-                 WHERE id = ?`,
-                [
-                    String(kiteData.user_id || ''),
-                    String(kiteData.access_token || ''),
-                    String(kiteData.public_token || ''),
-                    req.authUser.id,
-                ]
-            );
+        if (kiteData?.access_token) {
+            // Always write to kite_global_session (id=1) so every app user gets Kite API access
+            // from DB; persistUserId only controls pending clear + users.kite_user_id hint.
+            await persistKiteTokensForUser(persistUserId || 0, kiteData);
+        } else if (persistUserId) {
+            await clearPendingKiteRequestToken(persistUserId);
         }
 
         res.json({
@@ -2261,9 +3300,8 @@ async function handleCallback(req, res) {
             user: kiteData,
             kiteConnected: true,
         });
-
     } catch (error) {
-        console.error(error.response?.data);
+        console.error(error.response?.data || error.message);
         res.status(500).json({ error: error.response?.data || error.message });
     }
 }

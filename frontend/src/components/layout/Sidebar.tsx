@@ -19,7 +19,7 @@ export const Sidebar: React.FC<Props> = ({ open, onClose }) => {
   const { pathname, search } = useLocation();
   const q = new URLSearchParams(search);
   const scannerType = q.get("type") ?? "sector";
-  const { scanDate } = useAppShell();
+  const { scanDate, can } = useAppShell();
   const d = encodeURIComponent(scanDate);
 
   const dash = pathname === "/dashboard";
@@ -29,6 +29,8 @@ export const Sidebar: React.FC<Props> = ({ open, onClose }) => {
   const optionBias = pathname === "/nifty-option-bias";
   const myTodayChoice = pathname === "/my-today-choice";
   const scan = pathname === "/scanner";
+  const adminUsers = pathname === "/admin/users";
+  const adminRoles = pathname === "/admin/roles";
 
   const Item = ({
     to,
@@ -87,76 +89,118 @@ export const Sidebar: React.FC<Props> = ({ open, onClose }) => {
       </div>
 
       <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto p-3">
-        <Item
-          to={`/dashboard?date=${d}`}
-          active={dash}
-          icon={<IconChartBar />}
-        >
-          Dashboard
-        </Item>
-        <Item
-          to={`/positions?date=${d}`}
-          active={pos}
-          icon={<IconTableCells />}
-        >
-          Positions
-        </Item>
-        <Item
-          to={`/scanner?type=sector&date=${d}`}
-          active={scan && scannerType === "sector"}
-          icon={<IconLayers />}
-        >
-          Sector
-        </Item>
-        <Item
-          to={`/scanner?type=top-gainers&date=${d}`}
-          active={scan && scannerType === "top-gainers"}
-          icon={<IconTrendUp />}
-        >
-          Top Gainers
-        </Item>
-        <Item
-          to={`/scanner?type=top-losers&date=${d}`}
-          active={scan && scannerType === "top-losers"}
-          icon={<IconTrendDown />}
-        >
-          Top Losers
-        </Item>
-        <Item
-          to={`/scanner?type=5min-breakout&date=${d}`}
-          active={scan && scannerType === "5min-breakout"}
-          icon={<IconBolt />}
-        >
-          5 Min Breakout
-        </Item>
-        <Item
-          to={`/nifty50-920-breakout?date=${d}`}
-          active={nifty}
-          icon={<IconClock />}
-        >
-          9:20 Breakout
-        </Item>
-        <Item
-          to={`/nifty50-930-breakout?date=${d}`}
-          active={breakout930}
-          icon={<IconBreak930 />}
-        >
-          9:20 Breakout
-        </Item>
-        <Item
-          to={`/nifty-option-bias?date=${d}`}
-          active={optionBias}
-          icon={<IconSplit />}
-        >
-          CE / PE bias
-        </Item>
-        <Item
-          to={`/my-today-choice?date=${d}`}
-          active={myTodayChoice}
-          icon={<IconStar />}
-        >
-          My Today Choice
-        </Item>
+        {can("menu.dashboard") ? (
+          <Item
+            to={`/dashboard?date=${d}`}
+            active={dash}
+            icon={<IconChartBar />}
+          >
+            Dashboard
+          </Item>
+        ) : null}
+        {can("menu.positions") ? (
+          <Item
+            to={`/positions?date=${d}`}
+            active={pos}
+            icon={<IconTableCells />}
+          >
+            Positions
+          </Item>
+        ) : null}
+        {can("menu.scanner") ? (
+          <>
+            <Item
+              to={`/scanner?type=sector&date=${d}`}
+              active={scan && scannerType === "sector"}
+              icon={<IconLayers />}
+            >
+              Sector
+            </Item>
+            <Item
+              to={`/scanner?type=top-gainers&date=${d}`}
+              active={scan && scannerType === "top-gainers"}
+              icon={<IconTrendUp />}
+            >
+              Top Gainers
+            </Item>
+            <Item
+              to={`/scanner?type=top-losers&date=${d}`}
+              active={scan && scannerType === "top-losers"}
+              icon={<IconTrendDown />}
+            >
+              Top Losers
+            </Item>
+            <Item
+              to={`/scanner?type=5min-breakout&date=${d}`}
+              active={scan && scannerType === "5min-breakout"}
+              icon={<IconBolt />}
+            >
+              5 Min Breakout
+            </Item>
+          </>
+        ) : null}
+        {can("menu.nifty920") ? (
+          <Item
+            to={`/nifty50-920-breakout?date=${d}`}
+            active={nifty}
+            icon={<IconClock />}
+          >
+            9:20 Breakout
+          </Item>
+        ) : null}
+        {can("menu.nifty930") ? (
+          <Item
+            to={`/nifty50-930-breakout?date=${d}`}
+            active={breakout930}
+            icon={<IconBreak930 />}
+          >
+            9:30 Breakout
+          </Item>
+        ) : null}
+        {can("menu.optionbias") ? (
+          <Item
+            to={`/nifty-option-bias?date=${d}`}
+            active={optionBias}
+            icon={<IconSplit />}
+          >
+            CE / PE bias
+          </Item>
+        ) : null}
+        {can("menu.mytoday") ? (
+          <Item
+            to={`/my-today-choice?date=${d}`}
+            active={myTodayChoice}
+            icon={<IconStar />}
+          >
+            My Today Choice
+          </Item>
+        ) : null}
+
+        {(can("admin.users") || can("admin.roles")) && (
+          <div className="mt-2 border-t border-slate-100 pt-2">
+            <div className="px-3 pb-2 text-[10px] font-bold uppercase tracking-wide text-slate-400">
+              Administration
+            </div>
+            {can("admin.users") ? (
+              <Item
+                to="/admin/users"
+                active={adminUsers}
+                icon={<IconUsers />}
+              >
+                Users
+              </Item>
+            ) : null}
+            {can("admin.roles") ? (
+              <Item
+                to="/admin/roles"
+                active={adminRoles}
+                icon={<IconShield />}
+              >
+                Roles &amp; permissions
+              </Item>
+            ) : null}
+          </div>
+        )}
       </nav>
 
       <div className="border-t border-slate-100 p-3 text-center text-xs text-slate-400">
@@ -251,6 +295,22 @@ function IconStar() {
   return (
     <svg className="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="m11.48 3.499 2.239 4.537 5.007.728-3.623 3.532.855 4.987-4.478-2.354-4.478 2.354.855-4.987-3.623-3.532 5.007-.728 2.239-4.537Z" />
+    </svg>
+  );
+}
+
+function IconUsers() {
+  return (
+    <svg className="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" />
+    </svg>
+  );
+}
+
+function IconShield() {
+  return (
+    <svg className="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z" />
     </svg>
   );
 }

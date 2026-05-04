@@ -1,9 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { isAxiosError } from "axios";
 import API from "../services/api";
 import { parseDashDate, useAppShell } from "../context/AppShellContext";
 import CenteredLoader from "../components/CenteredLoader";
+import KiteConnectNotice from "../components/KiteConnectNotice";
+import {
+  getApiErrorMessage,
+  isKiteOrBrokerSessionError,
+} from "../utils/apiError";
 import "./Nifty921.css";
 import "./OptionBias.css";
 
@@ -92,15 +96,7 @@ const OptionBias: React.FC = () => {
       setData(res.data);
       setLastUpdated(new Date());
     } catch (err: unknown) {
-      let msg = "Failed to load option bias";
-      if (isAxiosError(err)) {
-        const d = err.response?.data;
-        if (typeof d === "string") msg = d;
-        else if (d && typeof d === "object" && "error" in d) {
-          msg = String((d as { error: unknown }).error);
-        } else if (err.message) msg = err.message;
-      } else if (err instanceof Error) msg = err.message;
-      setError(msg);
+      setError(getApiErrorMessage(err));
       setData(null);
     } finally {
       setLoading(false);
@@ -284,7 +280,8 @@ const OptionBias: React.FC = () => {
           </Link>
         </div>
 
-        {error && (
+        <KiteConnectNotice message={error} />
+        {error && !isKiteOrBrokerSessionError(error) && (
           <div className="nifty-card ob-error" role="alert">
             {error}
           </div>

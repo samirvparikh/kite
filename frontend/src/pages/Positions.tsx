@@ -1,9 +1,14 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { isAxiosError } from "axios";
 import API from "../services/api";
 import { parseDashDate, useAppShell } from "../context/AppShellContext";
 import CenteredLoader from "../components/CenteredLoader";
+import PortfolioOverviewBlock, {
+  type PortfolioHoldingRow,
+  type PortfolioMarginSegment,
+  type PortfolioProfileData,
+} from "../components/portfolio/PortfolioOverviewBlock";
+import { getApiErrorMessage } from "../utils/apiError";
 
 type NetPosition = {
   tradingsymbol?: string;
@@ -15,10 +20,6 @@ type NetPosition = {
   pnl?: number;
   realised?: number;
   unrealised?: number;
-};
-
-type MarginSegment = {
-  utilised?: { debits?: number };
 };
 
 function num(v: unknown): number {
@@ -65,7 +66,13 @@ const Positions: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [netRows, setNetRows] = useState<NetPosition[]>([]);
-  const [marginDebits, setMarginDebits] = useState<number | null>(null);
+  const [profileData, setProfileData] = useState<PortfolioProfileData>({});
+  const [equityData, setEquityData] = useState<PortfolioMarginSegment>({});
+  const [commodityData, setCommodityData] = useState<PortfolioMarginSegment>(
+    {}
+  );
+  const [holdingsData, setHoldingsData] = useState<PortfolioHoldingRow[]>([]);
+  const [needsKiteConnect, setNeedsKiteConnect] = useState(false);
   const [indexLine, setIndexLine] = useState<{
     label: string;
     ltp: number;
@@ -87,59 +94,125 @@ const Positions: React.FC = () => {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setNeedsKiteConnect(false);
 
     const niftyKey = "NSE:NIFTY 50";
 
-    Promise.all([
-      API.get("/api/kite/portfolio/positions"),
-      API.get<{ data?: { equity?: MarginSegment } }>("/api/kite/user/margins"),
-      API.get(`/api/kite/quote?i=${encodeURIComponent(niftyKey)}`).catch(
-        () => null
-      ),
-    ])
-      .then(([posRes, marginsRes, quoteRes]) => {
-        if (cancelled) return;
-        setNetRows(extractNet(posRes.data));
-        const eq = marginsRes.data?.data?.equity;
-        const deb = eq?.utilised?.debits;
-        setMarginDebits(typeof deb === "number" ? deb : null);
+    function applyQuote(
+      quoteRes: { data?: { data?: Record<string, unknown> } } | null
+    ) {
+      const qd = quoteRes?.data?.data;
+      if (!qd) {
+        setIndexLine(null);
+        return;
+      }
+      const q = qd[niftyKey] as
+        | {
+            last_price?: number;
+            ohlc?: { close?: number };
+          }
+        | undefined;
+      if (q && typeof q.last_price === "number") {
+        const close = num(q.ohlc?.close) || q.last_price;
+        const chgPct =
+          close !== 0 ? ((q.last_price - close) / close) * 100 : 0;
+        setIndexLine({
+          label: "NIFTY 50",
+          ltp: q.last_price,
+          chgPct,
+        });
+      } else setIndexLine(null);
+    }
 
-        if (quoteRes?.data) {
-          const qd = (quoteRes.data as { data?: Record<string, unknown> })
-            ?.data;
-          const q = qd?.[niftyKey] as
-            | {
-                last_price?: number;
-                ohlc?: { close?: number };
-              }
-            | undefined;
-          if (q && typeof q.last_price === "number") {
-            const close = num(q.ohlc?.close) || q.last_price;
-            const chgPct =
-              close !== 0 ? ((q.last_price - close) / close) * 100 : 0;
-            setIndexLine({
-              label: "NIFTY 50",
-              ltp: q.last_price,
-              chgPct,
-            });
-          } else setIndexLine(null);
-        } else setIndexLine(null);
-      })
-      .catch((err: unknown) => {
+    (async () => {
+      try {
+        const me = await API.get<{
+          user: {
+            username: string;
+            email: string;
+            kiteConnected: boolean;
+          };
+        }>("/api/auth/me");
         if (cancelled) return;
-        let msg = "Failed to load positions";
-        if (isAxiosError(err)) {
-          const d = err.response?.data;
-          if (typeof d === "string") msg = d;
-          else if (d && typeof d === "object" && "message" in d) {
-            msg = String((d as { message: unknown }).message);
-          } else if (err.message) msg = err.message;
-        } else if (err instanceof Error) msg = err.message;
-        setError(msg);
-      })
-      .finally(() => {
+        const user = me.data?.user;
+        if (!user) {
+          setError("Could not load account");
+          return;
+        }
+
+        if (!user.kiteConnected) {
+          setProfileData({
+            user_name: user.username,
+            user_id: "—",
+            email: user.email,
+            broker: "Zerodha (not connected)",
+          });
+          setEquityData({});
+          setCommodityData({});
+          setHoldingsData([]);
+          setNeedsKiteConnect(true);
+
+          const [posRes, marginsRes, quoteRes] = await Promise.all([
+            API.get("/api/kite/portfolio/positions"),
+            API.get<{
+              data?: {
+                equity?: PortfolioMarginSegment;
+                commodity?: PortfolioMarginSegment;
+              };
+            }>("/api/kite/user/margins"),
+            API.get(`/api/kite/quote?i=${encodeURIComponent(niftyKey)}`).catch(
+              () => null
+            ),
+          ]);
+          if (cancelled) return;
+          setNetRows(extractNet(posRes.data));
+          const md = marginsRes.data?.data ?? {};
+          setEquityData(md.equity ?? {});
+          setCommodityData(md.commodity ?? {});
+          applyQuote(quoteRes);
+          return;
+        }
+
+        const [profileRes, marginsRes, holdingsRes, posRes, quoteRes] =
+          await Promise.all([
+            API.get<{ data: PortfolioProfileData }>(
+              "/api/kite/user/profile"
+            ),
+            API.get<{
+              data: {
+                equity?: PortfolioMarginSegment;
+                commodity?: PortfolioMarginSegment;
+              };
+            }>("/api/kite/user/margins"),
+            API.get<{ data: PortfolioHoldingRow[] }>(
+              "/api/kite/portfolio/holdings"
+            ),
+            API.get("/api/kite/portfolio/positions"),
+            API.get(`/api/kite/quote?i=${encodeURIComponent(niftyKey)}`).catch(
+              () => null
+            ),
+          ]);
+        if (cancelled) return;
+
+        const md = marginsRes.data?.data ?? {};
+        const kiteProfile = profileRes.data?.data ?? {};
+        setProfileData({
+          ...kiteProfile,
+          email: user.email,
+        });
+        setEquityData(md.equity ?? {});
+        setCommodityData(md.commodity ?? {});
+        setHoldingsData(
+          Array.isArray(holdingsRes.data?.data) ? holdingsRes.data.data : []
+        );
+        setNetRows(extractNet(posRes.data));
+        applyQuote(quoteRes);
+      } catch (err: unknown) {
+        if (!cancelled) setError(getApiErrorMessage(err));
+      } finally {
         if (!cancelled) setLoading(false);
-      });
+      }
+    })();
 
     return () => {
       cancelled = true;
@@ -150,6 +223,32 @@ const Positions: React.FC = () => {
     () => netRows.filter((p) => num(p.quantity) !== 0),
     [netRows]
   );
+
+  const marginDebits = useMemo(() => {
+    const deb = equityData.utilised?.debits;
+    return typeof deb === "number" ? deb : null;
+  }, [equityData]);
+
+  const { equityAvailable, equityUtilised, totalPnl, totalHoldingValue } =
+    useMemo(() => {
+      let totalPnlVal = 0;
+      let totalHoldingValueVal = 0;
+      for (const item of holdingsData) {
+        const quantity = Number(item.quantity ?? 0);
+        const lastPrice = Number(item.last_price ?? 0);
+        const pnl = Number(item.pnl ?? 0);
+        totalHoldingValueVal += quantity * lastPrice;
+        totalPnlVal += pnl;
+      }
+      return {
+        equityAvailable: Number(
+          equityData.available?.live_balance ?? 0
+        ),
+        equityUtilised: Number(equityData.utilised?.debits ?? 0),
+        totalPnl: totalPnlVal,
+        totalHoldingValue: totalHoldingValueVal,
+      };
+    }, [holdingsData, equityData]);
 
   const totals = useMemo(() => {
     let totalPnl = 0;
@@ -174,16 +273,20 @@ const Positions: React.FC = () => {
     );
   }
 
-  if (error) {
-    return (
-      <div className="mx-auto max-w-lg rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-        {error}
-      </div>
-    );
-  }
-
   return (
     <div className="grid gap-4 px-4 pb-10 md:px-6 lg:grid-cols-12">
+      <PortfolioOverviewBlock
+        profileData={profileData}
+        equityData={equityData}
+        commodityData={commodityData}
+        holdingsData={holdingsData}
+        needsKiteConnect={needsKiteConnect}
+        error={error}
+        equityAvailable={equityAvailable}
+        equityUtilised={equityUtilised}
+        totalPnl={totalPnl}
+        totalHoldingValue={totalHoldingValue}
+      />
       {/* Left — P&L summary */}
       <aside className="space-y-4 lg:col-span-3">
         <div className="flex rounded-lg bg-slate-100 p-1">

@@ -18,37 +18,81 @@ API.interceptors.request.use((config) => {
   return config;
 });
 
-function shouldRedirectToHome(error: unknown): boolean {
+function responseErrorText(
+  data: unknown,
+  fallbackMessage: string
+): string {
+  if (typeof data === "string") return data;
+  if (data && typeof data === "object") {
+    const o = data as { message?: unknown; error?: unknown };
+    if (typeof o.message === "string") return o.message;
+    if (typeof o.error === "string") return o.error;
+  }
+  return fallbackMessage;
+}
+
+/** Broker / Zerodha API failures — keep user on the page; do not clear app JWT. */
+function isKiteOrBrokerApiFailureMessage(text: string): boolean {
+  const m = text.toLowerCase();
+  return (
+    m.includes("kite api not connected") ||
+    m.includes("connect zerodha") ||
+    m.includes("please connect zerodha") ||
+    m.includes("incorrect `api_key` or `access_token`") ||
+    m.includes("incorrect api_key or access_token") ||
+    m.includes("token is invalid or has expired") ||
+    m.includes("tokenexception") ||
+    m.includes("incorrect authentication credentials")
+  );
+}
+
+function requestPath(error: unknown): string {
+  const url = String(
+    (error as { config?: { url?: string } })?.config?.url ?? ""
+  );
+  const path = url.includes("://") ? new URL(url).pathname : url.split("?")[0];
+  return path;
+}
+
+function shouldClearSessionAndRedirect(error: unknown): boolean {
   const err = error as {
     response?: { status?: number; data?: unknown };
+    config?: { url?: string };
     message?: string;
   };
   const status = err?.response?.status;
   const data = err?.response?.data;
-  const message =
-    typeof data === "string"
-      ? data
-      : data && typeof data === "object" && "message" in data
-        ? String((data as { message?: unknown }).message ?? "")
-        : err?.message ?? "";
-  const m = message.toLowerCase();
+  const message = responseErrorText(data, err?.message ?? "");
+  const path = requestPath(error);
 
-  if (status === 401) return true;
-  if (m.includes("incorrect `api_key` or `access_token`")) return true;
-  if (m.includes("incorrect api_key or access_token")) return true;
-  if (m.includes("token is invalid or has expired")) return true;
-  if (m.includes("tokenexception")) return true;
+  if (isKiteOrBrokerApiFailureMessage(message)) return false;
+
+  if (status === 403) return false;
+
+  if (path.endsWith("/api/auth/login") || path.endsWith("/api/auth/register")) {
+    return false;
+  }
+
+  if (status === 401) {
+    const m = message.toLowerCase();
+    if (m.includes("invalid credentials")) return false;
+    if (m.includes("please login first")) return true;
+    if (path.endsWith("/api/auth/me")) return true;
+    return false;
+  }
+
   return false;
 }
 
 API.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (shouldRedirectToHome(error)) {
+    if (shouldClearSessionAndRedirect(error)) {
       localStorage.removeItem("access_token");
       localStorage.removeItem("request_token");
-      if (window.location.pathname !== "/") {
-        window.location.assign("/");
+      const path = window.location.pathname;
+      if (path !== "/login" && path !== "/register") {
+        window.location.assign("/login");
       }
     }
     return Promise.reject(error);

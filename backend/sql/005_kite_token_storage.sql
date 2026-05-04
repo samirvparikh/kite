@@ -1,0 +1,8 @@
+-- Zerodha Kite OAuth — shared storage (all app users).
+--
+-- kite_global_session (single row id = 1):
+--   kite_access_token, kite_public_token, refresh_token (optional), kite_user_id, updated_at
+--
+-- users.kite_pending_request_token / _at — short-lived request_token for OAuth binding per user
+--
+-- Legacy users.kite_access_token and refresh_tokens were removed; API startup migrates data once.

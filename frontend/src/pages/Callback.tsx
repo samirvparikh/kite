@@ -9,11 +9,21 @@ const Callback: React.FC = () => {
 
     const request_token = params.get("request_token");
     const status = params.get("status");
+    const state = params.get("state");
+    const denied =
+      status === "failure" ||
+      status === "denied" ||
+      status === "error";
 
-    if (status === "success" && request_token) {
+    // Zerodha may send only request_token, or status=success / other non-failure values.
+    if (request_token && !denied) {
       setMessage("Processing login...");
 
-      API.get(`/api/callback?request_token=${request_token}`)
+      const qs = new URLSearchParams();
+      qs.set("request_token", request_token);
+      if (state) qs.set("state", state);
+
+      API.get(`/api/callback?${qs.toString()}`)
         .then(() => {
           window.location.assign(
             `/dashboard?date=${encodeURIComponent(

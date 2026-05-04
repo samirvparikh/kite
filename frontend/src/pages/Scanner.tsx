@@ -1,9 +1,13 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { isAxiosError } from "axios";
 import API from "../services/api";
 import { parseDashDate, useAppShell } from "../context/AppShellContext";
 import CenteredLoader from "../components/CenteredLoader";
+import KiteConnectNotice from "../components/KiteConnectNotice";
+import {
+  getApiErrorMessage,
+  isKiteOrBrokerSessionError,
+} from "../utils/apiError";
 import "./Scanner.css";
 
 const TITLES: Record<string, string> = {
@@ -392,15 +396,7 @@ const Scanner: React.FC = () => {
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        let msg = "Failed to load scanner";
-        if (isAxiosError(err)) {
-          const d = err.response?.data;
-          if (typeof d === "string") msg = d;
-          else if (d && typeof d === "object" && "message" in d) {
-            msg = String((d as { message: unknown }).message);
-          } else if (err.message) msg = err.message;
-        } else if (err instanceof Error) msg = err.message;
-        setError(msg);
+        setError(getApiErrorMessage(err));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -550,7 +546,8 @@ const Scanner: React.FC = () => {
           </Link>
         </div>
 
-        {error && (
+        <KiteConnectNotice message={error} />
+        {error && !isKiteOrBrokerSessionError(error) && (
           <div
             style={{
               background: "#fef2f2",

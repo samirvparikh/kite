@@ -4,6 +4,11 @@ import { isAxiosError } from "axios";
 import API from "../services/api";
 import { parseDashDate, useAppShell } from "../context/AppShellContext";
 import CenteredLoader from "../components/CenteredLoader";
+import KiteConnectNotice from "../components/KiteConnectNotice";
+import {
+  getApiErrorMessage,
+  isKiteOrBrokerSessionError,
+} from "../utils/apiError";
 import "./Scanner.css";
 
 type PickRow = {
@@ -69,15 +74,7 @@ const MyTodayChoice: React.FC = () => {
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        let msg = "Failed to load picks";
-        if (isAxiosError(err)) {
-          const d = err.response?.data;
-          if (typeof d === "string") msg = d;
-          else if (d && typeof d === "object" && "message" in d) {
-            msg = String((d as { message: unknown }).message);
-          } else if (err.message) msg = err.message;
-        } else if (err instanceof Error) msg = err.message;
-        setError(msg);
+        setError(getApiErrorMessage(err));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -187,7 +184,8 @@ const MyTodayChoice: React.FC = () => {
           </Link>
         </div>
 
-        {error && (
+        <KiteConnectNotice message={error} />
+        {error && !isKiteOrBrokerSessionError(error) && (
           <div className="scanner-card" style={{ color: "#991b1b", borderColor: "#fecaca", background: "#fef2f2" }}>
             {error}
           </div>

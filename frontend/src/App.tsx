@@ -12,6 +12,9 @@ import Chart from "./pages/Chart";
 import Positions from "./pages/Positions";
 import MyTodayChoice from "./pages/MyTodayChoice";
 import AppLayout from "./layouts/AppLayout";
+import RequirePermission from "./components/RequirePermission";
+import AdminUsers from "./pages/AdminUsers";
+import AdminRoles from "./pages/AdminRoles";
 import Static5MinBreakout from "./pages/static/Static5MinBreakout";
 import Static920Breakout from "./pages/static/Static920Breakout";
 import Static930Breakout from "./pages/static/Static930Breakout";
@@ -26,6 +29,8 @@ const App: React.FC = () => {
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
         <Route path="/callback" element={<Callback />} />
+        {/* Kite redirect URL often uses /api/callback on the frontend origin — same handler as /callback */}
+        <Route path="/api/callback" element={<Callback />} />
         <Route path="/chart" element={<Chart />} />
         <Route path="/scanners/5min-breakout" element={<Static5MinBreakout />} />
         <Route path="/scanners/9-20-breakout" element={<Static920Breakout />} />
@@ -40,6 +45,22 @@ const App: React.FC = () => {
           <Route path="/nifty50-930-breakout" element={<Breakout930 />} />
           <Route path="/nifty-option-bias" element={<OptionBias />} />
           <Route path="/my-today-choice" element={<MyTodayChoice />} />
+          <Route
+            path="/admin/users"
+            element={
+              <RequirePermission permission="admin.users">
+                <AdminUsers />
+              </RequirePermission>
+            }
+          />
+          <Route
+            path="/admin/roles"
+            element={
+              <RequirePermission permission="admin.roles">
+                <AdminRoles />
+              </RequirePermission>
+            }
+          />
         </Route>
       </Routes>
     </BrowserRouter>
