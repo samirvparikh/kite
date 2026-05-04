@@ -1,7 +1,10 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { BrandLogo } from "../components/BrandLogo";
 import API from "../services/api";
+
+const REGISTRATION_CODE_SUPPORT =
+  "Please contact support: samir@netsture.com";
 
 const Login: React.FC = () => {
   const navigate = useNavigate();
@@ -11,9 +14,32 @@ const Login: React.FC = () => {
   const [email, setEmail] = useState("");
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
+  const [registrationCode, setRegistrationCode] = useState("");
+  const [codesRequired, setCodesRequired] = useState(false);
+  const [registrationCodeLen, setRegistrationCodeLen] = useState(6);
   const [loading, setLoading] = useState(false);
   const [kiteLoading, setKiteLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    API.get<{
+      codesRequired: boolean;
+      codeLength?: number;
+    }>("/api/auth/registration-status")
+      .then((res) => {
+        if (cancelled) return;
+        setCodesRequired(Boolean(res.data?.codesRequired));
+        const n = Number(res.data?.codeLength);
+        if (Number.isFinite(n) && n > 0) setRegistrationCodeLen(n);
+      })
+      .catch(() => {
+        if (!cancelled) setCodesRequired(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleKiteLogin = async () => {
     setError(null);
@@ -55,12 +81,26 @@ const Login: React.FC = () => {
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    const code = registrationCode.trim();
+    if (codesRequired && code.length !== registrationCodeLen) {
+      setError(
+        `Registration code must be exactly ${registrationCodeLen} characters. ${REGISTRATION_CODE_SUPPORT}`
+      );
+      return;
+    }
+    if (!codesRequired && code.length > 0 && code.length !== registrationCodeLen) {
+      setError(
+        `Registration code must be exactly ${registrationCodeLen} characters if provided. ${REGISTRATION_CODE_SUPPORT}`
+      );
+      return;
+    }
     setLoading(true);
     try {
       const res = await API.post<{ token: string }>("/api/auth/register", {
         username,
         email,
         password,
+        code: code || undefined,
       });
       localStorage.setItem("access_token", res.data.token);
       navigate("/dashboard", { replace: true });
@@ -249,6 +289,29 @@ const Login: React.FC = () => {
                       placeholder="Email"
                       required
                     />
+                    <input
+                      value={registrationCode}
+                      onChange={(e) =>
+                        setRegistrationCode(
+                          e.target.value.slice(0, registrationCodeLen)
+                        )
+                      }
+                      className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-brand-orange"
+                      placeholder={
+                        codesRequired
+                          ? `Registration code (${registrationCodeLen} characters, required)`
+                          : `Registration code (optional, ${registrationCodeLen} chars if used)`
+                      }
+                      required={codesRequired}
+                      minLength={codesRequired ? registrationCodeLen : undefined}
+                      maxLength={registrationCodeLen}
+                      inputMode="text"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <p className="text-[11px] leading-snug text-slate-500">
+                      Wrong or missing code? {REGISTRATION_CODE_SUPPORT}
+                    </p>
                   </>
                 ) : (
                   <input

@@ -15,6 +15,7 @@ import AppLayout from "./layouts/AppLayout";
 import RequirePermission from "./components/RequirePermission";
 import AdminUsers from "./pages/AdminUsers";
 import AdminRoles from "./pages/AdminRoles";
+import AdminSettings from "./pages/AdminSettings";
 import Static5MinBreakout from "./pages/static/Static5MinBreakout";
 import Static920Breakout from "./pages/static/Static920Breakout";
 import Static930Breakout from "./pages/static/Static930Breakout";
@@ -58,6 +59,14 @@ const App: React.FC = () => {
             element={
               <RequirePermission permission="admin.roles">
                 <AdminRoles />
+              </RequirePermission>
+            }
+          />
+          <Route
+            path="/admin/settings"
+            element={
+              <RequirePermission permission="admin.settings">
+                <AdminSettings />
               </RequirePermission>
             }
           />

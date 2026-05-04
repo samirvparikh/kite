@@ -43,7 +43,8 @@ INSERT IGNORE INTO `permissions` (`name`, `slug`, `description`) VALUES
   ('CE / PE bias', 'menu.optionbias', 'Option bias'),
   ('My Today Choice', 'menu.mytoday', 'My today choice'),
   ('Users', 'admin.users', 'Manage users and roles assignment'),
-  ('Roles & permissions', 'admin.roles', 'Edit role permissions');
+  ('Roles & permissions', 'admin.roles', 'Edit role permissions'),
+  ('Settings', 'admin.settings', 'Key/value app settings and registration codes');
 
 -- ---------------------------------------------------------------------------
 -- role_permissions: Admin = all permissions; User = menu.* only
@@ -81,6 +82,18 @@ CREATE TABLE IF NOT EXISTS `kite_global_session` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT IGNORE INTO `kite_global_session` (`id`) VALUES (1);
+
+-- ---------------------------------------------------------------------------
+-- App settings (generic key/value; field_name = registration_code → signup codes)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `app_settings` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `field_name` VARCHAR(128) NOT NULL,
+  `field_value` VARCHAR(2048) NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY `uq_app_settings_name_value` (`field_name`, `field_value`(191))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------------
 -- Users (app login + role_id; per-user pending OAuth request_token only)

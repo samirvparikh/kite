@@ -43,7 +43,8 @@ INSERT IGNORE INTO `permissions` (`name`, `slug`, `description`) VALUES
   ('CE / PE bias', 'menu.optionbias', 'Option bias'),
   ('My Today Choice', 'menu.mytoday', 'My today choice'),
   ('Users', 'admin.users', 'Manage users and roles assignment'),
-  ('Roles & permissions', 'admin.roles', 'Edit role permissions');
+  ('Roles & permissions', 'admin.roles', 'Edit role permissions'),
+  ('Settings', 'admin.settings', 'Key/value app settings and registration codes');
 
 INSERT IGNORE INTO `role_permissions` (`role_id`, `permission_id`)
 SELECT r.`id`, p.`id`

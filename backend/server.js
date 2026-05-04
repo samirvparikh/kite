@@ -50,6 +50,7 @@ app.get('/api', (req, res) => {
         endpoints: [
             'GET /api/health (process + MySQL ping)',
             'POST /api/auth/register',
+            'GET /api/auth/registration-status (public: whether registration code is required)',
             'POST /api/auth/login',
             'GET /api/auth/me',
             'GET /api/login',
@@ -74,6 +75,10 @@ app.get('/api', (req, res) => {
             'GET /api/admin/roles (admin.roles)',
             'GET /api/admin/permissions (admin.roles)',
             'PUT /api/admin/roles/:id/permissions { permissionIds: number[] } (admin.roles)',
+            'GET /api/admin/settings (admin.settings)',
+            'POST /api/admin/settings { fieldName, fieldValue } (admin.settings)',
+            'PATCH /api/admin/settings/:id { fieldName?, fieldValue? } (admin.settings)',
+            'DELETE /api/admin/settings/:id (admin.settings)',
         ],
         auth: 'Send header: Authorization: Bearer <app_token>. Legacy direct Kite token also supported. Zerodha access_token and refresh_token (if any) are stored once in table kite_global_session (id=1) for the whole app; renewed via Kite POST /session/refresh_token when the session is stale or after Kite API auth errors.',
     });
@@ -152,7 +157,14 @@ const PERMISSION_SEEDS = [
     ['My Today Choice', 'menu.mytoday', 'My today choice'],
     ['Users', 'admin.users', 'Manage users and roles assignment'],
     ['Roles & permissions', 'admin.roles', 'Edit role permissions'],
+    ['Settings', 'admin.settings', 'Key/value app settings and registration codes'],
 ];
+
+/** Rows with this `field_name` are valid signup codes when at least one exists. */
+const REGISTRATION_CODE_FIELD_NAME = 'registration_code';
+const REGISTRATION_CODE_LENGTH = 6;
+const REGISTRATION_CODE_SUPPORT =
+    'Please contact support: samir@netsture.com';
 
 async function ensureUsersRoleColumn() {
     const [cols] = await db.query(
@@ -263,6 +275,20 @@ async function initDb() {
     await ensureKiteGlobalSessionTable();
     await ensureUserPendingRequestTokenColumns();
     await migrateKiteTokensToGlobalAndDropLegacy();
+    await ensureAppSettingsTable();
+}
+
+async function ensureAppSettingsTable() {
+    await db.query(`
+        CREATE TABLE IF NOT EXISTS app_settings (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            field_name VARCHAR(128) NOT NULL,
+            field_value VARCHAR(2048) NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_app_settings_name_value (field_name, field_value(191))
+        )
+    `);
 }
 
 async function ensureKiteGlobalSessionTable() {
@@ -703,10 +729,31 @@ function requirePermission(...required) {
 
 app.use(hydrateAuthUser);
 
+app.get('/api/auth/registration-status', async (_req, res) => {
+    try {
+        const [rows] = await db.query(
+            `SELECT COUNT(*) AS c FROM app_settings WHERE field_name = ?`,
+            [REGISTRATION_CODE_FIELD_NAME]
+        );
+        const c = Number(rows?.[0]?.c ?? 0);
+        return res.json({
+            codesRequired: c > 0,
+            registrationCodeField: REGISTRATION_CODE_FIELD_NAME,
+            codeLength: REGISTRATION_CODE_LENGTH,
+        });
+    } catch (error) {
+        console.error(error.message);
+        return res
+            .status(500)
+            .json({ error: 'Failed to read registration settings' });
+    }
+});
+
 app.post('/api/auth/register', async (req, res) => {
     const username = String(req.body?.username ?? '').trim();
     const email = String(req.body?.email ?? '').trim().toLowerCase();
     const password = String(req.body?.password ?? '');
+    const registrationCode = String(req.body?.code ?? '').trim();
 
     if (!username || !email || !password) {
         return res
@@ -720,6 +767,40 @@ app.post('/api/auth/register', async (req, res) => {
     }
 
     try {
+        const [codeCountRows] = await db.query(
+            `SELECT COUNT(*) AS c FROM app_settings WHERE field_name = ?`,
+            [REGISTRATION_CODE_FIELD_NAME]
+        );
+        const codesConfigured = Number(codeCountRows?.[0]?.c ?? 0) > 0;
+        if (codesConfigured) {
+            if (!registrationCode) {
+                return res.status(400).json({
+                    error: `Registration code is required (${REGISTRATION_CODE_LENGTH} characters). ${REGISTRATION_CODE_SUPPORT}`,
+                });
+            }
+            if (registrationCode.length !== REGISTRATION_CODE_LENGTH) {
+                return res.status(400).json({
+                    error: `Registration code must be exactly ${REGISTRATION_CODE_LENGTH} characters. ${REGISTRATION_CODE_SUPPORT}`,
+                });
+            }
+            const [matchRows] = await db.query(
+                `SELECT id FROM app_settings
+                 WHERE field_name = ?
+                   AND CHAR_LENGTH(TRIM(field_value)) = ?
+                   AND LOWER(TRIM(field_value)) = LOWER(?) LIMIT 1`,
+                [
+                    REGISTRATION_CODE_FIELD_NAME,
+                    REGISTRATION_CODE_LENGTH,
+                    registrationCode,
+                ]
+            );
+            if (!matchRows?.length) {
+                return res.status(400).json({
+                    error: `Invalid registration code. ${REGISTRATION_CODE_SUPPORT}`,
+                });
+            }
+        }
+
         const [existing] = await db.query(
             'SELECT id FROM users WHERE username = ? OR email = ? LIMIT 1',
             [username, email]
@@ -1208,6 +1289,149 @@ app.put(
         } catch (error) {
             console.error(error.message);
             return res.status(500).json({ error: 'Failed to update role' });
+        }
+    }
+);
+
+app.get(
+    '/api/admin/settings',
+    requireAuth,
+    requirePermission('admin.settings'),
+    async (_req, res) => {
+        try {
+            const [rows] = await db.query(
+                `SELECT id, field_name, field_value, created_at, updated_at
+                 FROM app_settings ORDER BY field_name ASC, id ASC`
+            );
+            return res.json({ settings: rows });
+        } catch (error) {
+            console.error(error.message);
+            return res.status(500).json({ error: 'Failed to list settings' });
+        }
+    }
+);
+
+app.post(
+    '/api/admin/settings',
+    requireAuth,
+    requirePermission('admin.settings'),
+    async (req, res) => {
+        const fieldName = String(req.body?.fieldName ?? '').trim();
+        const fieldValue = String(req.body?.fieldValue ?? '').trim();
+        if (!fieldName || !fieldValue) {
+            return res
+                .status(400)
+                .json({ error: 'fieldName and fieldValue are required' });
+        }
+        if (fieldName.length > 128 || fieldValue.length > 2048) {
+            return res.status(400).json({ error: 'fieldName or fieldValue too long' });
+        }
+        try {
+            const [result] = await db.query(
+                `INSERT INTO app_settings (field_name, field_value) VALUES (?, ?)`,
+                [fieldName, fieldValue]
+            );
+            const [rows] = await db.query(
+                `SELECT id, field_name, field_value, created_at, updated_at
+                 FROM app_settings WHERE id = ? LIMIT 1`,
+                [result.insertId]
+            );
+            return res.status(201).json({ setting: rows?.[0] });
+        } catch (error) {
+            if (error && error.code === 'ER_DUP_ENTRY') {
+                return res
+                    .status(409)
+                    .json({ error: 'A row with this field name and value already exists' });
+            }
+            console.error(error.message);
+            return res.status(500).json({ error: 'Failed to create setting' });
+        }
+    }
+);
+
+app.patch(
+    '/api/admin/settings/:id',
+    requireAuth,
+    requirePermission('admin.settings'),
+    async (req, res) => {
+        const id = parseInt(String(req.params.id), 10);
+        if (!Number.isFinite(id) || id <= 0) {
+            return res.status(400).json({ error: 'Invalid setting id' });
+        }
+        const rawName = req.body?.fieldName;
+        const rawVal = req.body?.fieldValue;
+        const sets = [];
+        const params = [];
+        if (rawName !== undefined) {
+            const fieldName = String(rawName ?? '').trim();
+            if (!fieldName) {
+                return res.status(400).json({ error: 'fieldName cannot be empty' });
+            }
+            if (fieldName.length > 128) {
+                return res.status(400).json({ error: 'fieldName too long' });
+            }
+            sets.push('field_name = ?');
+            params.push(fieldName);
+        }
+        if (rawVal !== undefined) {
+            const fieldValue = String(rawVal ?? '').trim();
+            if (!fieldValue) {
+                return res.status(400).json({ error: 'fieldValue cannot be empty' });
+            }
+            if (fieldValue.length > 2048) {
+                return res.status(400).json({ error: 'fieldValue too long' });
+            }
+            sets.push('field_value = ?');
+            params.push(fieldValue);
+        }
+        if (sets.length === 0) {
+            return res.status(400).json({ error: 'No fields to update' });
+        }
+        try {
+            params.push(id);
+            const [upd] = await db.query(
+                `UPDATE app_settings SET ${sets.join(', ')} WHERE id = ?`,
+                params
+            );
+            if (upd.affectedRows === 0) {
+                return res.status(404).json({ error: 'Setting not found' });
+            }
+            const [rows] = await db.query(
+                `SELECT id, field_name, field_value, created_at, updated_at
+                 FROM app_settings WHERE id = ? LIMIT 1`,
+                [id]
+            );
+            return res.json({ setting: rows?.[0] });
+        } catch (error) {
+            if (error && error.code === 'ER_DUP_ENTRY') {
+                return res
+                    .status(409)
+                    .json({ error: 'A row with this field name and value already exists' });
+            }
+            console.error(error.message);
+            return res.status(500).json({ error: 'Failed to update setting' });
+        }
+    }
+);
+
+app.delete(
+    '/api/admin/settings/:id',
+    requireAuth,
+    requirePermission('admin.settings'),
+    async (req, res) => {
+        const id = parseInt(String(req.params.id), 10);
+        if (!Number.isFinite(id) || id <= 0) {
+            return res.status(400).json({ error: 'Invalid setting id' });
+        }
+        try {
+            const [del] = await db.query(`DELETE FROM app_settings WHERE id = ?`, [id]);
+            if (del.affectedRows === 0) {
+                return res.status(404).json({ error: 'Setting not found' });
+            }
+            return res.json({ ok: true });
+        } catch (error) {
+            console.error(error.message);
+            return res.status(500).json({ error: 'Failed to delete setting' });
         }
     }
 );
