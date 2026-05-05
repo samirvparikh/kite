@@ -16,6 +16,7 @@ import RequirePermission from "./components/RequirePermission";
 import AdminUsers from "./pages/AdminUsers";
 import AdminRoles from "./pages/AdminRoles";
 import AdminSettings from "./pages/AdminSettings";
+import ChangePassword from "./pages/ChangePassword";
 import Static5MinBreakout from "./pages/static/Static5MinBreakout";
 import Static920Breakout from "./pages/static/Static920Breakout";
 import Static930Breakout from "./pages/static/Static930Breakout";
@@ -46,6 +47,7 @@ const App: React.FC = () => {
           <Route path="/nifty50-930-breakout" element={<Breakout930 />} />
           <Route path="/nifty-option-bias" element={<OptionBias />} />
           <Route path="/my-today-choice" element={<MyTodayChoice />} />
+          <Route path="/change-password" element={<ChangePassword />} />
           <Route
             path="/admin/users"
             element={

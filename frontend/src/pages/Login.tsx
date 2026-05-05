@@ -299,8 +299,8 @@ const Login: React.FC = () => {
                       className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-brand-orange"
                       placeholder={
                         codesRequired
-                          ? `Registration code (${registrationCodeLen} characters, required)`
-                          : `Registration code (optional, ${registrationCodeLen} chars if used)`
+                          ? `Registration code`
+                          : `Registration code`
                       }
                       required={codesRequired}
                       minLength={codesRequired ? registrationCodeLen : undefined}
@@ -449,7 +449,7 @@ const Login: React.FC = () => {
               .
             </p>
             <p className="mt-2 text-center text-[11px] text-slate-400">
-              @inningstar
+              @samirvparikh
             </p>
           </div>
         </div>

@@ -70,6 +70,21 @@
   font-size: 13px;
 }
 
+.scanner-refresh-btn {
+  border: 1px solid #dbeafe;
+  background: #2563eb;
+  color: #fff;
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.scanner-refresh-btn:hover {
+  background: #1d4ed8;
+}
+
 .scanner-symbol-link {
   color: #1d4ed8;
   text-decoration: none;

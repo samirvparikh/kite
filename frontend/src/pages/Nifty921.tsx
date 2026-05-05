@@ -91,6 +91,8 @@ const Nifty921: React.FC = () => {
   const [errorRows, setErrorRows] = useState<ErrorRow[]>([]);
   const [totalSymbols, setTotalSymbols] = useState(50);
   const [liveLtp, setLiveLtp] = useState<Record<string, number>>({});
+  /** Bump to re-run scan API when date is unchanged (Refresh). */
+  const [reloadNonce, setReloadNonce] = useState(0);
   const [breakoutSort, setBreakoutSort] = useState<SortState>({
     col: "diff",
     dir: "desc",
@@ -156,13 +158,19 @@ const Nifty921: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [dateParam]);
+  }, [dateParam, reloadNonce]);
 
   function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
-    const d = String(fd.get("date") ?? "").trim();
-    if (d) setSearchParams({ date: d });
+    const dRaw = String(fd.get("date") ?? "").trim();
+    if (!dRaw) return;
+    const d = normalizePageDate(dRaw);
+    if (d === dateParam) {
+      setReloadNonce((n) => n + 1);
+    } else {
+      setSearchParams({ date: d });
+    }
   }
 
   const breakoutRows = useMemo(
@@ -359,7 +367,7 @@ const Nifty921: React.FC = () => {
                 key={selectedDate}
               />
               <button type="submit" className="nifty-btn">
-                Run Scan
+                Refresh
               </button>
             </form>
           </div>

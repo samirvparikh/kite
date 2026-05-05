@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS `app_settings` (
   `field_value` VARCHAR(2048) NOT NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  UNIQUE KEY `uq_app_settings_name_value` (`field_name`, `field_value`(191))
+  UNIQUE KEY `uq_app_settings_name_value` (`field_name`, `field_value`(122))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT IGNORE INTO `permissions` (`name`, `slug`, `description`) VALUES

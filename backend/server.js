@@ -52,6 +52,8 @@ app.get('/api', (req, res) => {
             'POST /api/auth/register',
             'GET /api/auth/registration-status (public: whether registration code is required)',
             'POST /api/auth/login',
+            'POST /api/me/password { currentPassword, newPassword } (Bearer app JWT)',
+            'POST /api/auth/change-password (legacy alias; same as /api/me/password)',
             'GET /api/auth/me',
             'GET /api/login',
             'GET /api/callback',
@@ -286,7 +288,7 @@ async function ensureAppSettingsTable() {
             field_value VARCHAR(2048) NOT NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            UNIQUE KEY uq_app_settings_name_value (field_name, field_value(191))
+            UNIQUE KEY uq_app_settings_name_value (field_name, field_value(122))
         )
     `);
 }
@@ -727,7 +729,61 @@ function requirePermission(...required) {
     };
 }
 
+async function handleChangePassword(req, res) {
+    const currentPassword = String(req.body?.currentPassword ?? '');
+    const newPassword = String(req.body?.newPassword ?? '');
+    if (!currentPassword || !newPassword) {
+        return res.status(400).json({
+            error: 'currentPassword and newPassword are required',
+        });
+    }
+    if (newPassword.length < 6) {
+        return res
+            .status(400)
+            .json({ error: 'Password must be at least 6 characters' });
+    }
+    try {
+        const [rows] = await db.query(
+            'SELECT password_hash FROM users WHERE id = ? LIMIT 1',
+            [req.authUser.id]
+        );
+        const row = rows?.[0] ?? null;
+        if (!row?.password_hash) {
+            return res.status(401).json({ error: 'Please login first' });
+        }
+        const ok = await bcrypt.compare(currentPassword, row.password_hash);
+        if (!ok) {
+            return res
+                .status(400)
+                .json({ error: 'Current password is incorrect' });
+        }
+        const passwordHash = await bcrypt.hash(newPassword, 10);
+        await db.query('UPDATE users SET password_hash = ? WHERE id = ?', [
+            passwordHash,
+            req.authUser.id,
+        ]);
+        return res.json({ ok: true });
+    } catch (error) {
+        console.error(error.message);
+        return res.status(500).json({ error: 'Failed to update password' });
+    }
+}
+
+function passwordChangeGetNotAllowed(_req, res) {
+    res.status(405)
+        .set('Allow', 'POST')
+        .json({
+            error: 'Method not allowed',
+            hint: 'Use POST /api/me/password with JSON { currentPassword, newPassword } and Authorization: Bearer <app JWT>.',
+        });
+}
+
 app.use(hydrateAuthUser);
+
+app.get('/api/me/password', passwordChangeGetNotAllowed);
+app.post('/api/me/password', requireAuth, handleChangePassword);
+app.get('/api/auth/change-password', passwordChangeGetNotAllowed);
+app.post('/api/auth/change-password', requireAuth, handleChangePassword);
 
 app.get('/api/auth/registration-status', async (_req, res) => {
     try {

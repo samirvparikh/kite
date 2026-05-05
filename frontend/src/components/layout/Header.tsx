@@ -17,7 +17,6 @@ export const Header: React.FC<Props> = ({ onMenuClick }) => {
   const [, setSearchParams] = useSearchParams();
   const {
     profile,
-    profileLoading,
     authStatus,
     authErrorMessage,
     scanDate,
@@ -35,34 +34,6 @@ export const Header: React.FC<Props> = ({ onMenuClick }) => {
     document.addEventListener("click", onDoc);
     return () => document.removeEventListener("click", onDoc);
   }, []);
-
-  /** Indian FY (Apr–Mar) in IST, e.g. Apr 2026 → 2026-2027 */
-  const fyLabel = (() => {
-    const parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: "Asia/Kolkata",
-      year: "numeric",
-      month: "numeric",
-    }).formatToParts(new Date());
-    const y = parseInt(
-      parts.find((p) => p.type === "year")?.value ?? "0",
-      10
-    );
-    const m = parseInt(
-      parts.find((p) => p.type === "month")?.value ?? "1",
-      10
-    );
-    if (!Number.isFinite(y) || !Number.isFinite(m)) {
-      const cy = new Date().getFullYear();
-      return `${cy}-${cy + 1}`;
-    }
-    if (m >= 4) return `${y}-${y + 1}`;
-    return `${y - 1}-${y}`;
-  })();
-
-  const displayMonth = new Date().toLocaleDateString("en-IN", {
-    month: "short",
-    timeZone: "Asia/Kolkata",
-  });
 
   function onDateChange(v: string) {
     setScanDate(v);
@@ -120,7 +91,7 @@ export const Header: React.FC<Props> = ({ onMenuClick }) => {
         </div>
 
         <div className="ml-auto flex min-w-0 flex-1 basis-full flex-wrap items-center justify-end gap-x-3 gap-y-2 sm:basis-auto lg:flex-initial">
-          <div className="flex max-w-full flex-wrap items-center justify-end gap-x-3 gap-y-1 text-xs text-slate-600 sm:gap-x-4">
+          {/* <div className="flex max-w-full flex-wrap items-center justify-end gap-x-3 gap-y-1 text-xs text-slate-600 sm:gap-x-4">
             <span className="inline-flex max-w-full items-center gap-1.5">
               <span className="shrink-0 text-slate-400">Broker</span>
               <span className="max-w-[12rem] truncate font-semibold uppercase tracking-wide text-slate-800">
@@ -144,7 +115,7 @@ export const Header: React.FC<Props> = ({ onMenuClick }) => {
               <span className="text-slate-400">Month</span>
               <span className="font-semibold text-slate-800">{displayMonth}</span>
             </span>
-          </div>
+          </div> */}
 
           <div
             className={
@@ -179,7 +150,7 @@ export const Header: React.FC<Props> = ({ onMenuClick }) => {
               )}
             </span>
             {authStatus === "ok"
-              ? "Active"
+              ? "Kite"
               : authStatus === "loading"
                 ? "Checking"
                 : "Inactive"}
@@ -210,22 +181,13 @@ export const Header: React.FC<Props> = ({ onMenuClick }) => {
                 >
                   Dashboard
                 </Link>
-                {authStatus === "ok" && (
-                  <Link
-                    to="/register"
-                    className="block px-3 py-2 text-sm font-medium text-brand-navy hover:bg-slate-50"
-                    onClick={() => setMenuOpen(false)}
-                  >
-                    Create user
-                  </Link>
-                )}
-                <button
-                  type="button"
-                  className="w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                <Link
+                  to="/change-password"
+                  className="block px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
                   onClick={() => setMenuOpen(false)}
                 >
-                  Settings
-                </button>
+                  Change password
+                </Link>
                 <div className="my-1 border-t border-slate-100" />
                 <button
                   type="button"

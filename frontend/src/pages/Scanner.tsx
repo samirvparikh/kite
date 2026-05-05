@@ -163,6 +163,8 @@ const Scanner: React.FC = () => {
   const [source, setSource] = useState<string>("");
   const [selectedSector, setSelectedSector] = useState<string | null>(null);
   const [liveLtp, setLiveLtp] = useState<Record<string, number>>({});
+  /** Bump to re-fetch scanner API without changing URL (5 Min Breakout Refresh). */
+  const [reloadNonce, setReloadNonce] = useState(0);
   const [sectorSort, setSectorSort] = useState<SectorSortState>({
     col: "change_pct",
     dir: "desc",
@@ -405,7 +407,7 @@ const Scanner: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [type, date, universeMode]);
+  }, [type, date, universeMode, reloadNonce]);
 
   function setUniverseMode(next: "all" | "top-volume") {
     const q = new URLSearchParams(searchParams);
@@ -516,21 +518,39 @@ const Scanner: React.FC = () => {
               </p>
             ) : null}
             {is5minBreakout ? (
-              <div className="scanner-muted" style={{ marginTop: 8 }}>
-                Universe{" "}
-                <select
-                  value={universeMode === "top" ? "top-volume" : universeMode}
-                  onChange={(e) =>
-                    setUniverseMode(
-                      e.target.value === "top-volume" ? "top-volume" : "all"
-                    )
-                  }
-                  className="scanner-select"
-                  style={{ marginLeft: 6 }}
+              <div
+                className="scanner-muted"
+                style={{
+                  marginTop: 8,
+                  display: "flex",
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                  gap: 8,
+                }}
+              >
+                <span>
+                  Universe{" "}
+                  <select
+                    value={universeMode === "top" ? "top-volume" : universeMode}
+                    onChange={(e) =>
+                      setUniverseMode(
+                        e.target.value === "top-volume" ? "top-volume" : "all"
+                      )
+                    }
+                    className="scanner-select"
+                    style={{ marginLeft: 6 }}
+                  >
+                    <option value="all">All NSE EQ</option>
+                    <option value="top-volume">Top Volume (fast)</option>
+                  </select>
+                </span>
+                <button
+                  type="button"
+                  className="scanner-refresh-btn"
+                  onClick={() => setReloadNonce((n) => n + 1)}
                 >
-                  <option value="all">All NSE EQ</option>
-                  <option value="top-volume">Top Volume (fast)</option>
-                </select>
+                  Refresh
+                </button>
               </div>
             ) : null}
           </div>

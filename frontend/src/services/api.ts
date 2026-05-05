@@ -77,7 +77,11 @@ function shouldClearSessionAndRedirect(error: unknown): boolean {
     const m = message.toLowerCase();
     if (m.includes("invalid credentials")) return false;
     if (m.includes("please login first")) return true;
-    if (path.endsWith("/api/auth/me")) return true;
+    if (
+      path.endsWith("/api/auth/me") ||
+      path.endsWith("/api/me/password")
+    )
+      return true;
     return false;
   }
 
