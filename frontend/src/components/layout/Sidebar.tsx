@@ -213,9 +213,9 @@ export const Sidebar: React.FC<Props> = ({ open, onClose }) => {
         )}
       </nav>
 
-      <div className="border-t border-slate-100 p-3 text-center text-xs text-slate-400">
+      {/* <div className="border-t border-slate-100 p-3 text-center text-xs text-slate-400">
         Use header for scan date
-      </div>
+      </div> */}
     </aside>
   );
 };

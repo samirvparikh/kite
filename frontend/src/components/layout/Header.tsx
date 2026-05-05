@@ -79,7 +79,7 @@ export const Header: React.FC<Props> = ({ onMenuClick }) => {
 
         <div className="flex min-w-0 shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5">
           <label htmlFor="header-scan-date" className="shrink-0 text-xs font-medium text-slate-500">
-            Scan date
+            Date
           </label>
           <input
             id="header-scan-date"
