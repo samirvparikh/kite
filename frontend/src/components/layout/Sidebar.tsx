@@ -23,7 +23,6 @@ export const Sidebar: React.FC<Props> = ({ open, onClose }) => {
   const d = encodeURIComponent(scanDate);
 
   const dash = pathname === "/dashboard";
-  const pos = pathname === "/positions";
   const nifty = pathname === "/nifty50-920-breakout";
   const breakout930 = pathname === "/nifty50-930-breakout";
   const optionBias = pathname === "/nifty-option-bias";
@@ -99,15 +98,6 @@ export const Sidebar: React.FC<Props> = ({ open, onClose }) => {
             Dashboard
           </Item>
         ) : null}
-        {can("menu.positions") ? (
-          <Item
-            to={`/positions?date=${d}`}
-            active={pos}
-            icon={<IconTableCells />}
-          >
-            Positions
-          </Item>
-        ) : null}
         {can("menu.scanner") ? (
           <>
             <Item
@@ -116,20 +106,6 @@ export const Sidebar: React.FC<Props> = ({ open, onClose }) => {
               icon={<IconLayers />}
             >
               Sector
-            </Item>
-            <Item
-              to={`/scanner?type=top-gainers&date=${d}`}
-              active={scan && scannerType === "top-gainers"}
-              icon={<IconTrendUp />}
-            >
-              Top Gainers
-            </Item>
-            <Item
-              to={`/scanner?type=top-losers&date=${d}`}
-              active={scan && scannerType === "top-losers"}
-              icon={<IconTrendDown />}
-            >
-              Top Losers
             </Item>
             <Item
               to={`/scanner?type=5min-breakout&date=${d}`}
@@ -228,15 +204,6 @@ function IconSearch() {
   );
 }
 
-function IconTableCells() {
-  return (
-    <svg className="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 0 1-1.125-1.125V4.875m0 12.375c0 1.036.84 1.875 1.875 1.875h15.75c1.035 0 1.875-.84 1.875-1.875m-18.75 0V4.875m0 0C3.375 3.839 4.215 3 5.25 3h13.5c1.035 0 1.875.84 1.875 1.875v13.5Z" />
-      <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 9.75h7.5v4.5h-7.5v-4.5Z" />
-    </svg>
-  );
-}
-
 function IconChartBar() {
   return (
     <svg className="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
@@ -273,22 +240,6 @@ function IconBreak930() {
   return (
     <svg className="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 13.5 14.25 3m0 0v6.75m0-6.75h-6.75M20.25 10.5 9.75 21m0 0h6.75m-6.75 0V14.25" />
-    </svg>
-  );
-}
-
-function IconTrendUp() {
-  return (
-    <svg className="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 18 9 11.25l4.306 4.306a11.95 11.95 0 0 1 5.814-5.518l2.74-1.22m0 0-5.94-2.281m5.94 2.28-2.28 5.941" />
-    </svg>
-  );
-}
-
-function IconTrendDown() {
-  return (
-    <svg className="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 6 9 12.75l4.286-4.286a11.948 11.948 0 0 1 4.306 6.43l.776 2.898m0 0 3.182-5.511m-3.182 5.51-5.511-3.181" />
     </svg>
   );
 }

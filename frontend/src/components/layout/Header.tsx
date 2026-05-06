@@ -39,7 +39,6 @@ export const Header: React.FC<Props> = ({ onMenuClick }) => {
     setScanDate(v);
     if (
       location.pathname === "/dashboard" ||
-      location.pathname === "/positions" ||
       location.pathname === "/nifty50-920-breakout" ||
       location.pathname === "/nifty50-930-breakout" ||
       location.pathname === "/nifty-option-bias"

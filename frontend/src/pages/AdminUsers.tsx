@@ -7,10 +7,23 @@ type UserRow = {
   id: number;
   username: string;
   email: string;
+  status?: "Active" | "Inactive" | string | null;
+  last_login_date?: string | null;
   role_id: number | null;
   role_slug: string | null;
   role_name: string | null;
   kite_connected: number | boolean;
+};
+
+type LoginAttemptLogRow = {
+  id: number;
+  identifier: string;
+  attempted_password_hash?: string | null;
+  attempted_password_text?: string | null;
+  login_attempt_at: string;
+  ip_address?: string | null;
+  user_agent?: string | null;
+  failure_reason?: string | null;
 };
 
 const emptyCreate = {
@@ -26,9 +39,11 @@ const AdminUsers: React.FC = () => {
   const [roles, setRoles] = useState<RoleRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [savingId, setSavingId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [attemptLogsOpen, setAttemptLogsOpen] = useState(false);
+  const [attemptLogs, setAttemptLogs] = useState<LoginAttemptLogRow[]>([]);
+  const [attemptLogsLoading, setAttemptLogsLoading] = useState(false);
   const [create, setCreate] = useState(emptyCreate);
   const [creating, setCreating] = useState(false);
   const [editUser, setEditUser] = useState<UserRow | null>(null);
@@ -74,23 +89,6 @@ const AdminUsers: React.FC = () => {
       setCreate((c) => ({ ...c, roleId: defaultRoleId }));
     }
   }, [createOpen, create.roleId, defaultRoleId]);
-
-  async function onRoleChange(userId: number, roleId: number) {
-    setSavingId(userId);
-    setError(null);
-    try {
-      await API.patch(`/api/admin/users/${userId}`, { roleId });
-      await load();
-      await refreshSession();
-    } catch (e) {
-      setError(
-        (e as { response?: { data?: { error?: string } } })?.response?.data
-          ?.error ?? "Save failed"
-      );
-    } finally {
-      setSavingId(null);
-    }
-  }
 
   function openEdit(u: UserRow) {
     setEditUser(u);
@@ -207,6 +205,31 @@ const AdminUsers: React.FC = () => {
     );
   }
 
+  function formatLastLogin(value?: string | null) {
+    if (!value) return "-";
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return "-";
+    return d.toLocaleString();
+  }
+
+  async function loadAttemptLogs() {
+    setAttemptLogsLoading(true);
+    setError(null);
+    try {
+      const res = await API.get<{ logs: LoginAttemptLogRow[] }>(
+        "/api/admin/login-attempt-logs?limit=500"
+      );
+      setAttemptLogs(res.data?.logs ?? []);
+    } catch (e) {
+      setError(
+        (e as { response?: { data?: { error?: string } } })?.response?.data
+          ?.error ?? "Failed to load attempt logs"
+      );
+    } finally {
+      setAttemptLogsLoading(false);
+    }
+  }
+
   return (
     <div className="px-4 pb-10 pt-2 md:px-6">
       <div className="mx-auto max-w-[960px]">
@@ -218,22 +241,34 @@ const AdminUsers: React.FC = () => {
               <strong>Roles &amp; permissions</strong>.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              setCreateOpen((o) => !o);
-              setError(null);
-              if (!createOpen) {
-                setCreate({
-                  ...emptyCreate,
-                  roleId: defaultRoleId == null ? "" : defaultRoleId,
-                });
-              }
-            }}
-            className="shrink-0 rounded-lg bg-brand-navy px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-navy/90"
-          >
-            {createOpen ? "Close form" : "Add user"}
-          </button>
+          <div className="flex shrink-0 flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={async () => {
+                setAttemptLogsOpen(true);
+                await loadAttemptLogs();
+              }}
+              className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+            >
+              Attempt Logs
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setCreateOpen((o) => !o);
+                setError(null);
+                if (!createOpen) {
+                  setCreate({
+                    ...emptyCreate,
+                    roleId: defaultRoleId == null ? "" : defaultRoleId,
+                  });
+                }
+              }}
+              className="rounded-lg bg-brand-navy px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-navy/90"
+            >
+              {createOpen ? "Close form" : "Add user"}
+            </button>
+          </div>
         </div>
 
         {error && (
@@ -328,8 +363,10 @@ const AdminUsers: React.FC = () => {
               <tr>
                 <th className="px-4 py-3">User</th>
                 <th className="px-4 py-3">Email</th>
-                <th className="px-4 py-3">Kite</th>
+                {/* <th className="px-4 py-3">Kite</th> */}
                 <th className="px-4 py-3">Role</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Last Login</th>
                 <th className="px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
@@ -345,32 +382,31 @@ const AdminUsers: React.FC = () => {
                     )}
                   </td>
                   <td className="px-4 py-3 text-slate-700">{u.email}</td>
-                  <td className="px-4 py-3">
+                  {/* <td className="px-4 py-3">
                     {u.kite_connected ? (
                       <span className="text-emerald-700">Connected</span>
                     ) : (
                       <span className="text-slate-500">Not connected</span>
                     )}
+                  </td> */}
+                  <td className="px-4 py-3">
+                    <span className="inline-flex rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-700">
+                      {u.role_name || "User"}
+                    </span>
                   </td>
                   <td className="px-4 py-3">
-                    <select
-                      className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm"
-                      value={u.role_id ?? ""}
-                      disabled={savingId === u.id}
-                      onChange={(ev) => {
-                        const v = parseInt(ev.target.value, 10);
-                        if (Number.isFinite(v)) void onRoleChange(u.id, v);
-                      }}
+                    <span
+                      className={`inline-flex rounded-md px-2 py-1 text-xs font-semibold ${
+                        String(u.status || "Active") === "Active"
+                          ? "bg-emerald-50 text-emerald-700"
+                          : "bg-amber-50 text-amber-700"
+                      }`}
                     >
-                      <option value="" disabled>
-                        —
-                      </option>
-                      {roles.map((r) => (
-                        <option key={r.id} value={r.id}>
-                          {r.name}
-                        </option>
-                      ))}
-                    </select>
+                      {String(u.status || "Active")}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-slate-700">
+                    {formatLastLogin(u.last_login_date)}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex flex-wrap justify-end gap-2">
@@ -506,6 +542,105 @@ const AdminUsers: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {attemptLogsOpen && (
+        <div
+          className="fixed inset-0 z-[90] flex items-end justify-center bg-slate-900/50 p-4 sm:items-center"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="attempt-logs-title"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setAttemptLogsOpen(false);
+          }}
+        >
+          <div
+            className="max-h-[90vh] w-full max-w-6xl overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+              <div>
+                <h2
+                  id="attempt-logs-title"
+                  className="text-lg font-semibold text-slate-900"
+                >
+                  Attempt Logs
+                </h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  Failed login attempts from <code>login_attempt_logs</code>
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => void loadAttemptLogs()}
+                  className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Refresh
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAttemptLogsOpen(false)}
+                  className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-left text-xs">
+                <thead className="border-b border-slate-200 bg-slate-50 font-semibold uppercase text-slate-600">
+                  <tr>
+                    <th className="px-3 py-2">Date Time</th>
+                    <th className="px-3 py-2">Identifier</th>
+                    <th className="px-3 py-2">Password</th>
+                    <th className="px-3 py-2">Reason</th>
+                    <th className="px-3 py-2">IP</th>
+                    <th className="px-3 py-2">User Agent</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {attemptLogsLoading ? (
+                    <tr>
+                      <td className="px-3 py-3 text-slate-500" colSpan={6}>
+                        Loading attempt logs...
+                      </td>
+                    </tr>
+                  ) : attemptLogs.length === 0 ? (
+                    <tr>
+                      <td className="px-3 py-3 text-slate-500" colSpan={6}>
+                        No logs found.
+                      </td>
+                    </tr>
+                  ) : (
+                    attemptLogs.map((l) => (
+                      <tr key={l.id}>
+                        <td className="px-3 py-2 text-slate-700">
+                          {formatLastLogin(l.login_attempt_at)}
+                        </td>
+                        <td className="px-3 py-2 text-slate-900">
+                          {l.identifier}
+                        </td>
+                        <td className="px-3 py-2 text-slate-700">
+                          {l.attempted_password_text || "-"}
+                        </td>
+                        <td className="px-3 py-2 text-slate-700">
+                          {l.failure_reason || "-"}
+                        </td>
+                        <td className="px-3 py-2 text-slate-700">
+                          {l.ip_address || "-"}
+                        </td>
+                        <td className="max-w-[420px] truncate px-3 py-2 text-slate-500">
+                          {l.user_agent || "-"}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}

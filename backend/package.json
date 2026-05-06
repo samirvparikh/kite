@@ -11,6 +11,8 @@
     "db:migrate-kite-refresh": "node scripts/apply-kite-refresh-table.cjs",
     "db:migrate-kite-global": "node scripts/apply-kite-global-migration.cjs",
     "db:migrate-kite-pending": "node scripts/apply-pending-request-token-columns.cjs",
+    "db:migrate-user-status-and-login-logs": "node scripts/apply-user-status-and-login-logs.cjs",
+    "db:migrate-login-attempt-logs": "node scripts/apply-login-attempt-logs.cjs",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

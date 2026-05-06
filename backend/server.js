@@ -71,8 +71,10 @@ app.get('/api', (req, res) => {
             'GET /api/scan/nifty-option-bias?wings=5&expiry=YYYY-MM-DD (optional)',
             'GET /api/admin/users (admin: admin.users)',
             'GET /api/admin/users/:id (admin.users)',
-            'POST /api/admin/users { username, email, password, roleId? } (admin.users)',
-            'PATCH /api/admin/users/:id { roleId?, username?, email?, password? } (admin.users)',
+            'GET /api/admin/users/:id/login-logs?limit=50 (admin.users)',
+            'GET /api/admin/login-attempt-logs?limit=100 (admin.users)',
+            'POST /api/admin/users { username, email, password, roleId?, status? } (admin.users)',
+            'PATCH /api/admin/users/:id { roleId?, username?, email?, password?, status? } (admin.users)',
             'DELETE /api/admin/users/:id (admin.users)',
             'GET /api/admin/roles (admin.roles)',
             'GET /api/admin/permissions (admin.roles)',
@@ -256,6 +258,8 @@ async function initDb() {
             username VARCHAR(64) NOT NULL UNIQUE,
             email VARCHAR(191) NOT NULL UNIQUE,
             password_hash VARCHAR(255) NOT NULL,
+            status ENUM('Active','Inactive') NOT NULL DEFAULT 'Active',
+            last_login_date DATETIME NULL,
             kite_user_id VARCHAR(64) NULL,
             kite_pending_request_token VARCHAR(512) NULL,
             kite_pending_request_token_at DATETIME NULL,
@@ -276,6 +280,10 @@ async function initDb() {
     }
     await ensureKiteGlobalSessionTable();
     await ensureUserPendingRequestTokenColumns();
+    await ensureUserStatusAndLastLoginColumns();
+    await ensureUsersTableEngineInnoDb();
+    await ensureUserLoginLogsTable();
+    await ensureLoginAttemptLogsTable();
     await migrateKiteTokensToGlobalAndDropLegacy();
     await ensureAppSettingsTable();
 }
@@ -291,6 +299,111 @@ async function ensureAppSettingsTable() {
             UNIQUE KEY uq_app_settings_name_value (field_name, field_value(122))
         )
     `);
+}
+
+async function ensureUserStatusAndLastLoginColumns() {
+    const [statusCol] = await db.query(
+        `SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'status'`
+    );
+    if (Number(statusCol?.[0]?.c ?? 0) === 0) {
+        await db.query(
+            `ALTER TABLE users ADD COLUMN status ENUM('Active','Inactive') NOT NULL DEFAULT 'Active' AFTER password_hash`
+        );
+    }
+
+    const [lastLoginCol] = await db.query(
+        `SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'last_login_date'`
+    );
+    if (Number(lastLoginCol?.[0]?.c ?? 0) === 0) {
+        await db.query(
+            `ALTER TABLE users ADD COLUMN last_login_date DATETIME NULL AFTER status`
+        );
+    }
+}
+
+async function ensureUserLoginLogsTable() {
+    await db.query(`
+        CREATE TABLE IF NOT EXISTS user_login_logs (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            user_id BIGINT UNSIGNED NOT NULL,
+            login_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            ip_address VARCHAR(64) NULL,
+            user_agent VARCHAR(512) NULL,
+            KEY idx_user_login_logs_user_id (user_id),
+            KEY idx_user_login_logs_login_at (login_at),
+            CONSTRAINT fk_user_login_logs_user_id
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+    `);
+}
+
+async function ensureLoginAttemptLogsTable() {
+    await db.query(`
+        CREATE TABLE IF NOT EXISTS login_attempt_logs (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            identifier VARCHAR(191) NOT NULL,
+            attempted_password_hash VARCHAR(255) NOT NULL,
+            attempted_password_text VARCHAR(255) NULL,
+            login_attempt_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            ip_address VARCHAR(64) NULL,
+            user_agent VARCHAR(512) NULL,
+            failure_reason VARCHAR(64) NOT NULL DEFAULT 'invalid_credentials',
+            KEY idx_login_attempt_logs_identifier (identifier),
+            KEY idx_login_attempt_logs_attempt_at (login_attempt_at)
+        )
+    `);
+    const [plainCol] = await db.query(
+        `SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'login_attempt_logs' AND COLUMN_NAME = 'attempted_password_text'`
+    );
+    if (Number(plainCol?.[0]?.c ?? 0) === 0) {
+        await db.query(
+            `ALTER TABLE login_attempt_logs
+             ADD COLUMN attempted_password_text VARCHAR(255) NULL AFTER attempted_password_hash`
+        );
+    }
+}
+
+async function ensureUsersTableEngineInnoDb() {
+    const [rows] = await db.query(
+        `SELECT ENGINE FROM INFORMATION_SCHEMA.TABLES
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'
+         LIMIT 1`
+    );
+    const engine = String(rows?.[0]?.ENGINE || '').toUpperCase();
+    if (engine && engine !== 'INNODB') {
+        await db.query(`ALTER TABLE users ENGINE=InnoDB`);
+    }
+}
+
+async function logFailedLoginAttempt(req, identifier, password, reason) {
+    try {
+        const loginIp = getClientIp(req);
+        const loginUserAgent =
+            String(req.headers['user-agent'] || '').slice(0, 512) || null;
+        const safeIdentifier = String(identifier || '').trim().slice(0, 191);
+        const passwordHash = await bcrypt.hash(String(password || ''), 10);
+        const failureReason = String(reason || 'invalid_credentials')
+            .trim()
+            .slice(0, 64);
+        await db.query(
+            `INSERT INTO login_attempt_logs
+                (identifier, attempted_password_hash, attempted_password_text, ip_address, user_agent, failure_reason)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [
+                safeIdentifier,
+                passwordHash,
+                String(password || '').slice(0, 255),
+                loginIp,
+                loginUserAgent,
+                failureReason,
+            ]
+        );
+    } catch (e) {
+        console.error('failed login audit log:', e.message);
+    }
 }
 
 async function ensureKiteGlobalSessionTable() {
@@ -586,6 +699,15 @@ function getBearerRaw(req) {
     return auth && auth.startsWith('Bearer ') ? auth.slice(7).trim() : null;
 }
 
+function getClientIp(req) {
+    const forwarded = req.headers['x-forwarded-for'];
+    if (typeof forwarded === 'string' && forwarded.trim()) {
+        return forwarded.split(',')[0].trim().slice(0, 64);
+    }
+    const direct = String(req.ip || req.socket?.remoteAddress || '').trim();
+    return direct ? direct.slice(0, 64) : null;
+}
+
 function toPublicUser(row) {
     if (!row) return null;
     const kc =
@@ -596,6 +718,8 @@ function toPublicUser(row) {
         id: row.id,
         username: row.username,
         email: row.email,
+        status: row.status || 'Active',
+        lastLoginDate: row.last_login_date || null,
         kiteConnected: kc,
     };
 }
@@ -609,7 +733,7 @@ async function hydrateAuthUser(req, _res, next) {
         const payload = jwt.verify(bearer, JWT_SECRET);
         if (!payload?.userId) return next();
         const [rows] = await db.query(
-            `SELECT u.id, u.username, u.email,
+            `SELECT u.id, u.username, u.email, u.status,
                     u.kite_pending_request_token, u.kite_pending_request_token_at,
                     u.role_id, r.slug AS role_slug
              FROM users u
@@ -641,6 +765,7 @@ async function hydrateAuthUser(req, _res, next) {
             id: row.id,
             username: row.username,
             email: row.email,
+            status: row.status || 'Active',
             roleId: row.role_id,
             roleSlug,
             permissions,
@@ -903,18 +1028,36 @@ app.post('/api/auth/login', async (req, res) => {
     }
     try {
         const [rows] = await db.query(
-            `SELECT u.id, u.username, u.email, u.password_hash, u.role_id,
+            `SELECT u.id, u.username, u.email, u.password_hash, u.role_id, u.status, u.last_login_date,
                     ${SQL_EXPR_KITE_CONNECTED_GLOBAL} AS kite_connected
              FROM users u WHERE u.email = ? OR u.username = ? LIMIT 1`,
             [identifier.toLowerCase(), identifier]
         );
         const row = rows?.[0] ?? null;
         if (!row) {
+            await logFailedLoginAttempt(
+                req,
+                identifier,
+                password,
+                'user_not_found'
+            );
             return res.status(401).json({ error: 'Invalid credentials' });
         }
         const ok = await bcrypt.compare(password, row.password_hash);
         if (!ok) {
+            await logFailedLoginAttempt(
+                req,
+                identifier,
+                password,
+                'invalid_password'
+            );
             return res.status(401).json({ error: 'Invalid credentials' });
+        }
+        if (String(row.status || 'Active') !== 'Active') {
+            await logFailedLoginAttempt(req, identifier, password, 'inactive_user');
+            return res.status(403).json({
+                error: 'User not active. Contact to samir@netsture.com',
+            });
         }
         if (ADMIN_EMAIL && String(row.email || '').toLowerCase() === ADMIN_EMAIL) {
             const [arows] = await db.query(
@@ -929,6 +1072,14 @@ app.post('/api/auth/login', async (req, res) => {
                 row.role_id = adminRid;
             }
         }
+        const loginIp = getClientIp(req);
+        const loginUserAgent = String(req.headers['user-agent'] || '').slice(0, 512) || null;
+        await db.query(`UPDATE users SET last_login_date = NOW() WHERE id = ?`, [row.id]);
+        await db.query(
+            `INSERT INTO user_login_logs (user_id, ip_address, user_agent) VALUES (?, ?, ?)`,
+            [row.id, loginIp, loginUserAgent]
+        );
+        row.last_login_date = new Date();
         const token = issueAppToken(row.id);
         return res.json({
             token,
@@ -943,7 +1094,7 @@ app.post('/api/auth/login', async (req, res) => {
 app.get('/api/auth/me', requireAuth, async (req, res) => {
     try {
         const [rows] = await db.query(
-            `SELECT u.id, u.username, u.email, r.slug AS role_slug, r.name AS role_name,
+                `SELECT u.id, u.username, u.email, u.status, u.last_login_date, r.slug AS role_slug, r.name AS role_name,
                     ${SQL_EXPR_KITE_CONNECTED_GLOBAL} AS kite_connected
              FROM users u
              LEFT JOIN roles r ON r.id = u.role_id
@@ -975,7 +1126,7 @@ app
     .get(requireAuth, requirePermission('admin.users'), async (req, res) => {
         try {
             const [rows] = await db.query(
-                `SELECT u.id, u.username, u.email, u.role_id, r.slug AS role_slug, r.name AS role_name,
+                `SELECT u.id, u.username, u.email, u.status, u.last_login_date, u.role_id, r.slug AS role_slug, r.name AS role_name,
                         ${SQL_EXPR_KITE_CONNECTED_GLOBAL} AS kite_connected
                  FROM users u
                  LEFT JOIN roles r ON r.id = u.role_id
@@ -994,6 +1145,7 @@ app
         const username = String(req.body?.username ?? '').trim();
         const email = String(req.body?.email ?? '').trim().toLowerCase();
         const password = String(req.body?.password ?? '');
+        const statusRaw = req.body?.status;
         let roleId = parseInt(String(req.body?.roleId ?? ''), 10);
         if (!username || !email || !password) {
             return res.status(400).json({
@@ -1004,6 +1156,13 @@ app
             return res.status(400).json({
                 error: 'Password must be at least 6 characters',
             });
+        }
+        const status =
+            statusRaw === undefined || statusRaw === null || String(statusRaw).trim() === ''
+                ? 'Active'
+                : String(statusRaw).trim();
+        if (status !== 'Active' && status !== 'Inactive') {
+            return res.status(400).json({ error: 'status must be Active or Inactive' });
         }
         if (!Number.isFinite(roleId) || roleId <= 0) {
             const [ur] = await db.query(
@@ -1033,12 +1192,12 @@ app
             }
             const passwordHash = await bcrypt.hash(password, 10);
             const [result] = await db.query(
-                'INSERT INTO users (username, email, password_hash, role_id) VALUES (?, ?, ?, ?)',
-                [username, email, passwordHash, roleId]
+                'INSERT INTO users (username, email, password_hash, status, role_id) VALUES (?, ?, ?, ?, ?)',
+                [username, email, passwordHash, status, roleId]
             );
             const newId = result.insertId;
             const [rows] = await db.query(
-                `SELECT u.id, u.username, u.email, u.role_id, r.slug AS role_slug, r.name AS role_name,
+                `SELECT u.id, u.username, u.email, u.status, u.last_login_date, u.role_id, r.slug AS role_slug, r.name AS role_name,
                         ${SQL_EXPR_KITE_CONNECTED_GLOBAL} AS kite_connected
                  FROM users u
                  LEFT JOIN roles r ON r.id = u.role_id
@@ -1053,6 +1212,31 @@ app
     });
 
 app.get(
+    '/api/admin/login-attempt-logs',
+    requireAuth,
+    requirePermission('admin.users'),
+    async (req, res) => {
+        const rawLimit = parseInt(String(req.query?.limit ?? '100'), 10);
+        const limit = Number.isFinite(rawLimit)
+            ? Math.min(Math.max(rawLimit, 1), 500)
+            : 100;
+        try {
+            const [logs] = await db.query(
+                `SELECT id, identifier, attempted_password_text, login_attempt_at, ip_address, user_agent, failure_reason
+                 FROM login_attempt_logs
+                 ORDER BY login_attempt_at DESC, id DESC
+                 LIMIT ?`,
+                [limit]
+            );
+            return res.json({ logs, limit });
+        } catch (error) {
+            console.error(error.message);
+            return res.status(500).json({ error: 'Failed to load login attempt logs' });
+        }
+    }
+);
+
+app.get(
     '/api/admin/users/:id',
     requireAuth,
     requirePermission('admin.users'),
@@ -1063,7 +1247,7 @@ app.get(
         }
         try {
             const [rows] = await db.query(
-                `SELECT u.id, u.username, u.email, u.role_id, r.slug AS role_slug, r.name AS role_name,
+                `SELECT u.id, u.username, u.email, u.status, u.last_login_date, u.role_id, r.slug AS role_slug, r.name AS role_name,
                         ${SQL_EXPR_KITE_CONNECTED_GLOBAL} AS kite_connected
                  FROM users u
                  LEFT JOIN roles r ON r.id = u.role_id
@@ -1082,6 +1266,48 @@ app.get(
     }
 );
 
+app.get(
+    '/api/admin/users/:id/login-logs',
+    requireAuth,
+    requirePermission('admin.users'),
+    async (req, res) => {
+        const id = parseInt(String(req.params.id), 10);
+        if (!Number.isFinite(id) || id <= 0) {
+            return res.status(400).json({ error: 'Invalid user id' });
+        }
+
+        const rawLimit = parseInt(String(req.query?.limit ?? '50'), 10);
+        const limit = Number.isFinite(rawLimit)
+            ? Math.min(Math.max(rawLimit, 1), 200)
+            : 50;
+
+        try {
+            const [users] = await db.query(
+                `SELECT id, username, email FROM users WHERE id = ? LIMIT 1`,
+                [id]
+            );
+            const user = users?.[0] ?? null;
+            if (!user) {
+                return res.status(404).json({ error: 'User not found' });
+            }
+
+            const [logs] = await db.query(
+                `SELECT id, user_id, login_at, ip_address, user_agent
+                 FROM user_login_logs
+                 WHERE user_id = ?
+                 ORDER BY login_at DESC, id DESC
+                 LIMIT ?`,
+                [id, limit]
+            );
+
+            return res.json({ user, logs, limit });
+        } catch (error) {
+            console.error(error.message);
+            return res.status(500).json({ error: 'Failed to load user login logs' });
+        }
+    }
+);
+
 app.patch(
     '/api/admin/users/:id',
     requireAuth,
@@ -1096,6 +1322,7 @@ app.patch(
         const emailRaw = req.body?.email;
         const passwordRaw = req.body?.password;
         const roleIdRaw = req.body?.roleId;
+        const statusRaw = req.body?.status;
 
         const sets = [];
         const params = [];
@@ -1163,6 +1390,15 @@ app.patch(
             params.push(passwordHash);
         }
 
+        if (statusRaw !== undefined) {
+            const status = String(statusRaw).trim();
+            if (status !== 'Active' && status !== 'Inactive') {
+                return res.status(400).json({ error: 'status must be Active or Inactive' });
+            }
+            sets.push('status = ?');
+            params.push(status);
+        }
+
         if (sets.length === 0) {
             return res.status(400).json({ error: 'No fields to update' });
         }
@@ -1177,7 +1413,7 @@ app.patch(
                 return res.status(404).json({ error: 'User not found' });
             }
             const [rows] = await db.query(
-                `SELECT u.id, u.username, u.email, u.role_id, r.slug AS role_slug, r.name AS role_name,
+                `SELECT u.id, u.username, u.email, u.status, u.last_login_date, u.role_id, r.slug AS role_slug, r.name AS role_name,
                         ${SQL_EXPR_KITE_CONNECTED_GLOBAL} AS kite_connected
                  FROM users u
                  LEFT JOIN roles r ON r.id = u.role_id

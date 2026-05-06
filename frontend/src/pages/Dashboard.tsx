@@ -172,14 +172,7 @@ const Dashboard: React.FC = () => {
             ))}
           </ul>
           <p className="mt-8 text-sm text-slate-500">
-            Live margins, holdings, and open positions are on the{" "}
-            <Link
-              to="/positions"
-              className="font-semibold text-brand-navy underline decoration-brand-orange/40 underline-offset-2 hover:text-brand-orange"
-            >
-              Positions
-            </Link>{" "}
-            page.
+            Live margins and holdings are available on scanner and breakout pages.
           </p>
         </section>
 

@@ -103,6 +103,8 @@ CREATE TABLE IF NOT EXISTS `users` (
   `username` VARCHAR(64) NOT NULL UNIQUE,
   `email` VARCHAR(191) NOT NULL UNIQUE,
   `password_hash` VARCHAR(255) NOT NULL,
+  `status` ENUM('Active','Inactive') NOT NULL DEFAULT 'Active',
+  `last_login_date` DATETIME NULL,
   `role_id` BIGINT UNSIGNED NULL,
   `kite_user_id` VARCHAR(64) NULL,
   `kite_pending_request_token` VARCHAR(512) NULL,
@@ -110,6 +112,41 @@ CREATE TABLE IF NOT EXISTS `users` (
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   KEY `users_role_id_idx` (`role_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Ensure old MyISAM installs are converted so foreign keys can be created.
+ALTER TABLE `users` ENGINE=InnoDB;
+
+-- ---------------------------------------------------------------------------
+-- User login audit logs (one row for every successful app login)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `user_login_logs` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `user_id` BIGINT UNSIGNED NOT NULL,
+  `login_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `ip_address` VARCHAR(64) NULL,
+  `user_agent` VARCHAR(512) NULL,
+  KEY `idx_user_login_logs_user_id` (`user_id`),
+  KEY `idx_user_login_logs_login_at` (`login_at`),
+  CONSTRAINT `fk_user_login_logs_user_id`
+    FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------------------------------------------------------------------------
+-- Failed login attempts (including unknown users)
+-- Password is stored as bcrypt hash for audit only (never plain text).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `login_attempt_logs` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `identifier` VARCHAR(191) NOT NULL,
+  `attempted_password_hash` VARCHAR(255) NOT NULL,
+  `attempted_password_text` VARCHAR(255) NULL,
+  `login_attempt_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `ip_address` VARCHAR(64) NULL,
+  `user_agent` VARCHAR(512) NULL,
+  `failure_reason` VARCHAR(64) NOT NULL DEFAULT 'invalid_credentials',
+  KEY `idx_login_attempt_logs_identifier` (`identifier`),
+  KEY `idx_login_attempt_logs_attempt_at` (`login_attempt_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- New users default to "User" role (application also sets this on register).

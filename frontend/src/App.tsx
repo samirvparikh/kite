@@ -9,7 +9,6 @@ import Nifty921 from "./pages/Nifty921";
 import Breakout930 from "./pages/Breakout930";
 import OptionBias from "./pages/OptionBias";
 import Chart from "./pages/Chart";
-import Positions from "./pages/Positions";
 import MyTodayChoice from "./pages/MyTodayChoice";
 import AppLayout from "./layouts/AppLayout";
 import RequirePermission from "./components/RequirePermission";
@@ -17,6 +16,7 @@ import AdminUsers from "./pages/AdminUsers";
 import AdminRoles from "./pages/AdminRoles";
 import AdminSettings from "./pages/AdminSettings";
 import ChangePassword from "./pages/ChangePassword";
+import NotFound from "./pages/NotFound";
 import Static5MinBreakout from "./pages/static/Static5MinBreakout";
 import Static920Breakout from "./pages/static/Static920Breakout";
 import Static930Breakout from "./pages/static/Static930Breakout";
@@ -41,7 +41,6 @@ const App: React.FC = () => {
         <Route path="/scanners/my-today-choice" element={<StaticMyTodayChoice />} />
         <Route element={<AppLayout />}>
           <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/positions" element={<Positions />} />
           <Route path="/scanner" element={<Scanner />} />
           <Route path="/nifty50-920-breakout" element={<Nifty921 />} />
           <Route path="/nifty50-930-breakout" element={<Breakout930 />} />
@@ -73,6 +72,7 @@ const App: React.FC = () => {
             }
           />
         </Route>
+        <Route path="*" element={<NotFound />} />
       </Routes>
     </BrowserRouter>
   );
