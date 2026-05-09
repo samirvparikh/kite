@@ -11,6 +11,7 @@ import {
 import "./Scanner.css";
 
 const TITLES: Record<string, string> = {
+  "fno-stocks": "List F&O Stock",
   sector: "Sector View",
   "5min-breakout": "5 Min Breakout",
   "top-gainers": "Top Gainers",
@@ -71,6 +72,8 @@ type SortDir = "asc" | "desc";
 type BreakSortState = { col: BreakSortCol; dir: SortDir };
 type SectorSortCol = "name" | "stocks" | "change_pct";
 type SectorSortState = { col: SectorSortCol; dir: SortDir };
+type StockSortCol = "symbol" | "exchange" | "last_price" | "change_pct" | "change_rs";
+type StockSortState = { col: StockSortCol; dir: SortDir };
 
 function normalizeBreakRow(raw: StockRow): StockRow {
   const r = raw as StockRow & {
@@ -138,6 +141,7 @@ function formatAmount(value: unknown): string {
 }
 
 function apiTypeParam(pageType: string): string {
+  if (pageType === "fno-stocks") return "fno-stocks";
   if (pageType === "sector") return "sector";
   if (pageType === "5min-breakout") return "5min-breakout";
   if (pageType === "top-losers") return "top-losers";
@@ -149,9 +153,9 @@ const Scanner: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const { setScanDate } = useAppShell();
   const isPublicPage = location.pathname.startsWith("/scanners/");
-  const type = searchParams.get("type") ?? "sector";
+  const type = searchParams.get("type") ?? "fno-stocks";
   const date = searchParams.get("date") ?? istToday();
-  const universeMode = searchParams.get("universe") ?? "all";
+  const universeMode = searchParams.get("universe") ?? "top-volume";
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -176,6 +180,10 @@ const Scanner: React.FC = () => {
   const [breakdownSort, setBreakdownSort] = useState<BreakSortState>({
     col: "diff",
     dir: "asc",
+  });
+  const [stockSort, setStockSort] = useState<StockSortState>({
+    col: "change_pct",
+    dir: "desc",
   });
 
   const pageTitle = TITLES[type] ?? "Scanner";
@@ -331,6 +339,34 @@ const Scanner: React.FC = () => {
       s.col === col ? { col, dir: s.dir === "asc" ? "desc" : "asc" } : { col, dir: "asc" }
     );
   }
+
+  function toggleStockSort(col: StockSortCol) {
+    setStockSort((s) =>
+      s.col === col ? { col, dir: s.dir === "asc" ? "desc" : "asc" } : { col, dir: "asc" }
+    );
+  }
+
+  const sortedStockRows = useMemo(() => {
+    const mul = stockSort.dir === "asc" ? 1 : -1;
+    const copy = [...stockRows];
+    copy.sort((a, b) => {
+      let cmp = 0;
+      if (stockSort.col === "symbol") {
+        cmp = a.symbol.localeCompare(b.symbol);
+      } else if (stockSort.col === "exchange") {
+        cmp = a.exchange.localeCompare(b.exchange);
+      } else if (stockSort.col === "last_price") {
+        cmp = a.last_price - b.last_price;
+      } else if (stockSort.col === "change_pct") {
+        cmp = a.change_pct - b.change_pct;
+      } else {
+        cmp = a.change_rs - b.change_rs;
+      }
+      if (cmp !== 0) return cmp * mul;
+      return a.symbol.localeCompare(b.symbol);
+    });
+    return copy;
+  }, [stockRows, stockSort]);
 
   const breakoutSymbolKey = useMemo(() => {
     if (!is5minBreakout) return "";
@@ -553,6 +589,40 @@ const Scanner: React.FC = () => {
                 </button>
               </div>
             ) : null}
+            {type === "fno-stocks" ? (
+              <div
+                className="scanner-muted"
+                style={{
+                  marginTop: 8,
+                  display: "flex",
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                  gap: 8,
+                }}
+              >
+                <span>
+                  Scan date:{" "}
+                  <input
+                    type="date"
+                    value={date}
+                    onChange={(e) => {
+                      const q = new URLSearchParams(searchParams);
+                      q.set("date", e.target.value || istToday());
+                      setSearchParams(q, { replace: true });
+                    }}
+                    className="scanner-select"
+                    style={{ marginLeft: 6, minWidth: 150 }}
+                  />
+                </span>
+                <button
+                  type="button"
+                  className="scanner-refresh-btn"
+                  onClick={() => setReloadNonce((n) => n + 1)}
+                >
+                  Refresh
+                </button>
+              </div>
+            ) : null}
           </div>
           <Link
             className="scanner-back"
@@ -765,6 +835,34 @@ const Scanner: React.FC = () => {
                   <th>Net Chg ₹</th>
                   <th>LTP</th>
                 </tr>
+              ) : type === "fno-stocks" ? (
+                <tr>
+                  <th>
+                    <button type="button" className="scanner-th-sort" onClick={() => toggleStockSort("symbol")}>
+                      Symbol{stockSort.col === "symbol" ? (stockSort.dir === "asc" ? " ▲" : " ▼") : ""}
+                    </button>
+                  </th>
+                  <th>
+                    <button type="button" className="scanner-th-sort" onClick={() => toggleStockSort("exchange")}>
+                      Exchange{stockSort.col === "exchange" ? (stockSort.dir === "asc" ? " ▲" : " ▼") : ""}
+                    </button>
+                  </th>
+                  <th>
+                    <button type="button" className="scanner-th-sort" onClick={() => toggleStockSort("last_price")}>
+                      Last / Close{stockSort.col === "last_price" ? (stockSort.dir === "asc" ? " ▲" : " ▼") : ""}
+                    </button>
+                  </th>
+                  <th>
+                    <button type="button" className="scanner-th-sort" onClick={() => toggleStockSort("change_pct")}>
+                      Change %{stockSort.col === "change_pct" ? (stockSort.dir === "asc" ? " ▲" : " ▼") : ""}
+                    </button>
+                  </th>
+                  <th>
+                    <button type="button" className="scanner-th-sort" onClick={() => toggleStockSort("change_rs")}>
+                      Net Chg ₹{stockSort.col === "change_rs" ? (stockSort.dir === "asc" ? " ▲" : " ▼") : ""}
+                    </button>
+                  </th>
+                </tr>
               ) : (
                 <tr>
                   <th>Symbol</th>
@@ -912,7 +1010,7 @@ const Scanner: React.FC = () => {
                   );
                 })
               ) : (
-                stockRows.map((row) => {
+                (type === "fno-stocks" ? sortedStockRows : stockRows).map((row) => {
                   const ch = row.change_pct;
                   const rs = row.change_rs;
                   return (

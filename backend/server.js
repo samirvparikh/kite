@@ -2383,6 +2383,10 @@ let NSE_EQ_UNIVERSE_CACHE = {
     atMs: 0,
     symbols: [],
 };
+let FNO_UNDERLYING_SYMBOLS_CACHE = {
+    atMs: 0,
+    symbols: [],
+};
 
 async function loadNseEqUniverse(accessToken) {
     const now = Date.now();
@@ -2421,6 +2425,52 @@ async function loadNseEqUniverse(accessToken) {
     }
     const symbols = [...set].sort();
     NSE_EQ_UNIVERSE_CACHE = { atMs: now, symbols };
+    return symbols;
+}
+
+async function loadFnoUnderlyingSymbols(accessToken) {
+    const now = Date.now();
+    if (
+        Array.isArray(FNO_UNDERLYING_SYMBOLS_CACHE.symbols) &&
+        FNO_UNDERLYING_SYMBOLS_CACHE.symbols.length > 0 &&
+        now - FNO_UNDERLYING_SYMBOLS_CACHE.atMs < 15 * 60 * 1000
+    ) {
+        return FNO_UNDERLYING_SYMBOLS_CACHE.symbols;
+    }
+    const res = await axios.get('https://api.kite.trade/instruments', {
+        headers: {
+            'X-Kite-Version': '3',
+            Authorization: `token ${API_KEY}:${accessToken}`,
+        },
+        responseType: 'text',
+    });
+    const csv = String(res.data ?? '');
+    const lines = csv.split('\n');
+    if (lines.length < 2) return [];
+    const set = new Set();
+    for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        const cols = line.split(',');
+        if (cols.length < 12) continue;
+        const name = String(cols[3] ?? '').trim();
+        const instrumentType = String(cols[cols.length - 3] ?? '').trim();
+        const segment = String(cols[cols.length - 2] ?? '').trim();
+        const exchange = String(cols[cols.length - 1] ?? '').trim();
+        if (!name) continue;
+        if (exchange !== 'NFO') continue;
+        if (segment !== 'NFO-FUT' && segment !== 'NFO-OPT') continue;
+        if (
+            instrumentType !== 'FUT' &&
+            instrumentType !== 'CE' &&
+            instrumentType !== 'PE'
+        ) {
+            continue;
+        }
+        set.add(name);
+    }
+    const symbols = [...set].sort();
+    FNO_UNDERLYING_SYMBOLS_CACHE = { atMs: now, symbols };
     return symbols;
 }
 
@@ -2510,6 +2560,74 @@ async function buildNifty50MarketRows(accessToken, selectedDate) {
     return { source: 'historical', rows, quoteMap };
 }
 
+async function buildFnoMarketRows(accessToken, selectedDate) {
+    const todayIST = istDateString();
+    const quoteUniverse = await loadNseEqUniverse(accessToken);
+    const fnoUnderlyingSymbols = await loadFnoUnderlyingSymbols(accessToken);
+    const fnoSet = new Set(fnoUnderlyingSymbols);
+    const symbols = quoteUniverse.filter((s) => fnoSet.has(s));
+    const quoteMap = await fetchQuoteMapForSymbols(accessToken, symbols);
+    const rows = [];
+
+    if (selectedDate === todayIST) {
+        for (const symbol of symbols) {
+            const key = `NSE:${symbol}`;
+            const q = quoteMap[key];
+            if (!q) continue;
+            const m = pctChangeFromQuotes(q);
+            rows.push({
+                symbol,
+                exchange: 'NSE',
+                last_price: m.last_price,
+                change_pct: m.change_pct,
+                change_rs: m.change_rs,
+                sector: 'F&O',
+            });
+        }
+        rows.sort((a, b) => b.change_pct - a.change_pct);
+        return { source: 'quote', rows };
+    }
+
+    const prev = prevWeekdayIso(selectedDate);
+    const concurrency = 8;
+    const chunks = [];
+    for (let i = 0; i < symbols.length; i += concurrency) {
+        chunks.push(symbols.slice(i, i + concurrency));
+    }
+
+    for (const batch of chunks) {
+        await Promise.all(
+            batch.map(async (symbol) => {
+                const key = `NSE:${symbol}`;
+                const token = quoteMap[key]?.instrument_token;
+                if (token == null || token === '') return;
+                try {
+                    const m = await fetchHistoricalDayPair(
+                        accessToken,
+                        token,
+                        selectedDate,
+                        prev
+                    );
+                    if (!m) return;
+                    rows.push({
+                        symbol,
+                        exchange: 'NSE',
+                        last_price: m.last_price,
+                        change_pct: m.change_pct,
+                        change_rs: m.change_rs,
+                        sector: 'F&O',
+                    });
+                } catch (e) {
+                    console.error(symbol, e.message);
+                }
+            })
+        );
+    }
+
+    rows.sort((a, b) => b.change_pct - a.change_pct);
+    return { source: 'historical', rows };
+}
+
 function aggregateSectorRows(marketRows) {
     const by = new Map();
     for (const r of marketRows) {
@@ -2534,7 +2652,7 @@ function aggregateSectorRows(marketRows) {
 }
 
 /**
- * date=YYYY-MM-DD, type=sector|top-gainers|top-losers|5min-breakout
+ * date=YYYY-MM-DD, type=sector|top-gainers|top-losers|5min-breakout|fno-stocks
  * Mounted at /api/market so full path is /api/market/nifty50-scanner
  */
 const marketRouter = express.Router();
@@ -2563,13 +2681,22 @@ marketRouter.get('/nifty50-scanner', async (req, res) => {
             const breakoutRows = [];
             const breakdownRows = [];
             const errorRows = [];
-            const universeModeRaw = String(req.query.universe ?? 'all').trim().toLowerCase();
+            const universeModeRaw = String(req.query.universe ?? 'top-volume').trim().toLowerCase();
             const universeMode =
                 universeModeRaw === 'nifty50'
                     ? 'nifty50'
                     : universeModeRaw === 'top-volume' || universeModeRaw === 'top'
                     ? 'top-volume'
                     : 'all';
+            const maxSymbolsParam = parseInt(String(req.query.maxSymbols ?? ''), 10);
+            const hasMaxSymbolsParam = Number.isFinite(maxSymbolsParam) && maxSymbolsParam > 0;
+            const maxSymbols = hasMaxSymbolsParam
+                ? Math.min(maxSymbolsParam, 1200)
+                : universeMode === 'nifty50'
+                ? NIFTY50_SYMBOLS.length
+                : universeMode === 'top-volume'
+                ? 400
+                : 300;
             const universeSymbols = await loadNseEqUniverse(accessToken);
             const quoteAll = await fetchQuoteMapForSymbols(accessToken, universeSymbols);
             let scanSymbols = universeSymbols;
@@ -2583,8 +2710,10 @@ marketRouter.get('/nifty50-scanner', async (req, res) => {
                     }))
                     .filter((r) => Number.isFinite(r.volume) && r.volume > 0)
                     .sort((a, b) => b.volume - a.volume);
-                const topN = 400;
+                const topN = maxSymbols;
                 scanSymbols = ranked.slice(0, topN).map((r) => r.symbol);
+            } else if (scanSymbols.length > maxSymbols) {
+                scanSymbols = scanSymbols.slice(0, maxSymbols);
             }
             const bySymbol = new Map();
             for (const symbol of scanSymbols) {
@@ -2739,6 +2868,20 @@ marketRouter.get('/nifty50-scanner', async (req, res) => {
                 errorRows,
                 totalSymbols: scanSymbols.length,
                 universeMode,
+                maxSymbols,
+            });
+        }
+
+        if (type === 'fno-stocks') {
+            const { source, rows } = await buildFnoMarketRows(
+                accessToken,
+                selectedDate
+            );
+            return res.json({
+                date: selectedDate,
+                source,
+                sectorRows: [],
+                stockRows: rows,
             });
         }
 

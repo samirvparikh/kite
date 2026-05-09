@@ -133,7 +133,7 @@ const Dashboard: React.FC = () => {
 
   useEffect(() => {
     if (!localStorage.getItem("access_token")) {
-      navigate("/login", { replace: true });
+      navigate("/", { replace: true });
     }
   }, [navigate]);
 

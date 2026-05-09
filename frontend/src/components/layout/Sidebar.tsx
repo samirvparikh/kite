@@ -18,7 +18,7 @@ type Props = {
 export const Sidebar: React.FC<Props> = ({ open, onClose }) => {
   const { pathname, search } = useLocation();
   const q = new URLSearchParams(search);
-  const scannerType = q.get("type") ?? "sector";
+  const scannerType = q.get("type") ?? "fno-stocks";
   const { scanDate, can } = useAppShell();
   const d = encodeURIComponent(scanDate);
 
@@ -101,11 +101,11 @@ export const Sidebar: React.FC<Props> = ({ open, onClose }) => {
         {can("menu.scanner") ? (
           <>
             <Item
-              to={`/scanner?type=sector&date=${d}`}
-              active={scan && scannerType === "sector"}
+              to={`/scanner?type=fno-stocks&date=${d}`}
+              active={scan && scannerType === "fno-stocks"}
               icon={<IconLayers />}
             >
-              Sector
+              List F&amp;O Stock
             </Item>
             <Item
               to={`/scanner?type=5min-breakout&date=${d}`}

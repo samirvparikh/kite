@@ -118,8 +118,8 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
           email: user.email,
           user_id: user.username,
         });
-        setAuthStatus("ok");
-        setAuthErrorMessage(null);
+        setAuthStatus("failed");
+        setAuthErrorMessage("Zerodha (Kite) session required");
         setSessionReady(true);
         return;
       }
