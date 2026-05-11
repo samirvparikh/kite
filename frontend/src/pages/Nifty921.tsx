@@ -4,7 +4,6 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import API from "../services/api";
 import { parseDashDate, useAppShell } from "../context/AppShellContext";
 import CenteredLoader from "../components/CenteredLoader";
-import KiteConnectNotice from "../components/KiteConnectNotice";
 import {
   getApiErrorMessage,
   isKiteOrBrokerSessionError,
@@ -77,7 +76,7 @@ function normalizePageDate(raw: string | null): string {
 const Nifty921: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { setScanDate } = useAppShell();
+  const { setScanDate, setKiteApiErrorMessage } = useAppShell();
   const isPublicPage = location.pathname.startsWith("/scanners/");
   const rawDate = searchParams.get("date");
   const dateParam = rawDate != null && rawDate.trim() !== "" ? normalizePageDate(rawDate) : istToday();
@@ -118,6 +117,15 @@ const Nifty921: React.FC = () => {
     if (searchParams.get("date")) return;
     setSearchParams({ date: dateParam }, { replace: true });
   }, [searchParams, setSearchParams, dateParam]);
+
+  useEffect(() => {
+    if (error && isKiteOrBrokerSessionError(error)) {
+      setKiteApiErrorMessage(error);
+    } else {
+      setKiteApiErrorMessage(null);
+    }
+    return () => setKiteApiErrorMessage(null);
+  }, [error, setKiteApiErrorMessage]);
 
   useEffect(() => {
     let cancelled = false;
@@ -383,7 +391,6 @@ const Nifty921: React.FC = () => {
           </Link>
         </div>
 
-        <KiteConnectNotice message={error} />
         {error && !isKiteOrBrokerSessionError(error) && (
           <div
             className="nifty-card"

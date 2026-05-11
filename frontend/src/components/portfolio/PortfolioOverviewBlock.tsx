@@ -1,6 +1,6 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { Link } from "react-router-dom";
-import KiteConnectNotice from "../KiteConnectNotice";
+import { useAppShell } from "../../context/AppShellContext";
 import { isKiteOrBrokerSessionError } from "../../utils/apiError";
 import "../../pages/Dashboard.css";
 
@@ -78,6 +78,17 @@ const PortfolioOverviewBlock: React.FC<PortfolioOverviewBlockProps> = ({
   totalPnl,
   totalHoldingValue,
 }) => {
+  const { setKiteApiErrorMessage } = useAppShell();
+
+  useEffect(() => {
+    if (error && isKiteOrBrokerSessionError(error)) {
+      setKiteApiErrorMessage(error);
+    } else {
+      setKiteApiErrorMessage(null);
+    }
+    return () => setKiteApiErrorMessage(null);
+  }, [error, setKiteApiErrorMessage]);
+
   return (
     <div className="dashboard-page col-span-full mb-8 px-0 pt-0 md:mb-10">
       <div className="dashboard-container max-w-[1100px]">
@@ -117,7 +128,6 @@ const PortfolioOverviewBlock: React.FC<PortfolioOverviewBlockProps> = ({
           </div>
         )}
 
-        <KiteConnectNotice message={error} />
         {error && !isKiteOrBrokerSessionError(error) && (
           <div className="dashboard-error" role="alert">
             {error}

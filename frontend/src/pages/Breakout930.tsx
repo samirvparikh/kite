@@ -4,7 +4,6 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import API from "../services/api";
 import { parseDashDate, useAppShell } from "../context/AppShellContext";
 import CenteredLoader from "../components/CenteredLoader";
-import KiteConnectNotice from "../components/KiteConnectNotice";
 import {
   getApiErrorMessage,
   isKiteOrBrokerSessionError,
@@ -45,10 +44,6 @@ type SortCol =
   | "symbol"
   | "high_915"
   | "low_930"
-  | "prev_close"
-  | "open"
-  | "high"
-  | "low"
   | "volume_shares"
   | "value_lakhs"
   | "scan_ref"
@@ -84,18 +79,6 @@ function sortBreakoutRows(
         break;
       case "scan_ref":
         cmp = (a.scan_ref ?? a.latest_price) - (b.scan_ref ?? b.latest_price);
-        break;
-      case "prev_close":
-        cmp = (a.prev_close ?? 0) - (b.prev_close ?? 0);
-        break;
-      case "open":
-        cmp = (a.open ?? 0) - (b.open ?? 0);
-        break;
-      case "high":
-        cmp = (a.high ?? 0) - (b.high ?? 0);
-        break;
-      case "low":
-        cmp = (a.low ?? 0) - (b.low ?? 0);
         break;
       case "volume_shares":
         cmp = (a.volume_shares ?? 0) - (b.volume_shares ?? 0);
@@ -143,18 +126,6 @@ function sortBreakdownRows(
         break;
       case "scan_ref":
         cmp = (a.scan_ref ?? a.latest_price) - (b.scan_ref ?? b.latest_price);
-        break;
-      case "prev_close":
-        cmp = (a.prev_close ?? 0) - (b.prev_close ?? 0);
-        break;
-      case "open":
-        cmp = (a.open ?? 0) - (b.open ?? 0);
-        break;
-      case "high":
-        cmp = (a.high ?? 0) - (b.high ?? 0);
-        break;
-      case "low":
-        cmp = (a.low ?? 0) - (b.low ?? 0);
         break;
       case "volume_shares":
         cmp = (a.volume_shares ?? 0) - (b.volume_shares ?? 0);
@@ -233,7 +204,7 @@ function normalizePageDate(raw: string | null): string {
 const Breakout930: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { setScanDate, scanDate } = useAppShell();
+  const { setScanDate, scanDate, setKiteApiErrorMessage } = useAppShell();
   const isPublicPage = location.pathname.startsWith("/scanners/");
   const rawDate = searchParams.get("date");
   const dateParam =
@@ -296,6 +267,15 @@ const Breakout930: React.FC = () => {
     if (searchParams.get("date")) return;
     setSearchParams({ date: scanDate }, { replace: true });
   }, [searchParams, scanDate, setSearchParams]);
+
+  useEffect(() => {
+    if (error && isKiteOrBrokerSessionError(error)) {
+      setKiteApiErrorMessage(error);
+    } else {
+      setKiteApiErrorMessage(null);
+    }
+    return () => setKiteApiErrorMessage(null);
+  }, [error, setKiteApiErrorMessage]);
 
   useEffect(() => {
     let cancelled = false;
@@ -493,7 +473,6 @@ const Breakout930: React.FC = () => {
           </Link>
         </div>
 
-        <KiteConnectNotice message={error} />
         {error && !isKiteOrBrokerSessionError(error) && (
           <div
             className="nifty-card"
@@ -546,6 +525,18 @@ const Breakout930: React.FC = () => {
                       onSort={toggleBreakoutSort}
                     />
                     <ScanSortTh
+                      column="ltp"
+                      label="LTP"
+                      sort={breakoutSort}
+                      onSort={toggleBreakoutSort}
+                    />
+                    <ScanSortTh
+                      column="change_pct"
+                      label="%chng"
+                      sort={breakoutSort}
+                      onSort={toggleBreakoutSort}
+                    />
+                    <ScanSortTh
                       column="high_915"
                       label="High (09:15-09:30)"
                       sort={breakoutSort}
@@ -557,10 +548,6 @@ const Breakout930: React.FC = () => {
                       sort={breakoutSort}
                       onSort={toggleBreakoutSort}
                     />
-                    <ScanSortTh column="prev_close" label="Prev. Close" sort={breakoutSort} onSort={toggleBreakoutSort} />
-                    <ScanSortTh column="open" label="Open" sort={breakoutSort} onSort={toggleBreakoutSort} />
-                    <ScanSortTh column="high" label="High" sort={breakoutSort} onSort={toggleBreakoutSort} />
-                    <ScanSortTh column="low" label="Low" sort={breakoutSort} onSort={toggleBreakoutSort} />
                     <ScanSortTh column="volume_shares" label="Volume (Shares)" sort={breakoutSort} onSort={toggleBreakoutSort} />
                     <ScanSortTh column="value_lakhs" label="Value (₹ Lakhs)" sort={breakoutSort} onSort={toggleBreakoutSort} />
                     <th scope="col">CA</th>
@@ -570,24 +557,12 @@ const Breakout930: React.FC = () => {
                       sort={breakoutSort}
                       onSort={toggleBreakoutSort}
                     />
-                    <ScanSortTh
-                      column="change_pct"
-                      label="%chng"
-                      sort={breakoutSort}
-                      onSort={toggleBreakoutSort}
-                    />
-                    <ScanSortTh
-                      column="ltp"
-                      label="LTP"
-                      sort={breakoutSort}
-                      onSort={toggleBreakoutSort}
-                    />
                   </tr>
                 </thead>
                 <tbody>
                   {breakoutRows.length === 0 ? (
                     <tr>
-                      <td colSpan={12}>No stocks above the 09:15-09:30 range high.</td>
+                      <td colSpan={9}>No stocks above the 09:15-09:30 range high.</td>
                     </tr>
                   ) : (
                     sortedBreakoutRows.map((row) => (
@@ -602,12 +577,14 @@ const Breakout930: React.FC = () => {
                             {row.symbol}
                           </Link>
                         </td>
+                        <td className="nifty-ltp-live">
+                          {displayLtp(row.symbol, row.latest_price)}
+                        </td>
+                        <td className={(row.change_pct ?? 0) >= 0 ? "nifty-positive" : ""} style={(row.change_pct ?? 0) < 0 ? { color: "#b91c1c", fontWeight: 600 } : undefined}>
+                          {row.change_pct == null ? "-" : `${formatAmount(row.change_pct)}%`}
+                        </td>
                         <td>{formatAmount(row.high_915)}</td>
                         <td>{formatAmount(row.low_930)}</td>
-                        <td>{row.prev_close == null ? "-" : formatAmount(row.prev_close)}</td>
-                        <td>{row.open == null ? "-" : formatAmount(row.open)}</td>
-                        <td>{row.high == null ? "-" : formatAmount(row.high)}</td>
-                        <td>{row.low == null ? "-" : formatAmount(row.low)}</td>
                         <td>{row.volume_shares == null ? "-" : Math.round(row.volume_shares).toLocaleString("en-IN")}</td>
                         <td>{row.value_lakhs == null ? "-" : formatAmount(row.value_lakhs)}</td>
                         <td>{row.ca ?? "-"}</td>
@@ -616,12 +593,6 @@ const Breakout930: React.FC = () => {
                           <span className="nifty-muted" style={{ marginLeft: 6 }}>
                             ({row.price_source === "ltp" ? "at scan" : "last 5m close"})
                           </span>
-                        </td>
-                        <td className={(row.change_pct ?? 0) >= 0 ? "nifty-positive" : ""} style={(row.change_pct ?? 0) < 0 ? { color: "#b91c1c", fontWeight: 600 } : undefined}>
-                          {row.change_pct == null ? "-" : `${formatAmount(row.change_pct)}%`}
-                        </td>
-                        <td className="nifty-ltp-live">
-                          {displayLtp(row.symbol, row.latest_price)}
                         </td>
                       </tr>
                     ))
@@ -644,6 +615,18 @@ const Breakout930: React.FC = () => {
                       onSort={toggleBreakdownSort}
                     />
                     <ScanSortTh
+                      column="ltp"
+                      label="LTP"
+                      sort={breakdownSort}
+                      onSort={toggleBreakdownSort}
+                    />
+                    <ScanSortTh
+                      column="change_pct"
+                      label="%chng"
+                      sort={breakdownSort}
+                      onSort={toggleBreakdownSort}
+                    />
+                    <ScanSortTh
                       column="high_915"
                       label="High (09:15-09:30)"
                       sort={breakdownSort}
@@ -655,10 +638,6 @@ const Breakout930: React.FC = () => {
                       sort={breakdownSort}
                       onSort={toggleBreakdownSort}
                     />
-                    <ScanSortTh column="prev_close" label="Prev. Close" sort={breakdownSort} onSort={toggleBreakdownSort} />
-                    <ScanSortTh column="open" label="Open" sort={breakdownSort} onSort={toggleBreakdownSort} />
-                    <ScanSortTh column="high" label="High" sort={breakdownSort} onSort={toggleBreakdownSort} />
-                    <ScanSortTh column="low" label="Low" sort={breakdownSort} onSort={toggleBreakdownSort} />
                     <ScanSortTh column="volume_shares" label="Volume (Shares)" sort={breakdownSort} onSort={toggleBreakdownSort} />
                     <ScanSortTh column="value_lakhs" label="Value (₹ Lakhs)" sort={breakdownSort} onSort={toggleBreakdownSort} />
                     <th scope="col">CA</th>
@@ -668,24 +647,12 @@ const Breakout930: React.FC = () => {
                       sort={breakdownSort}
                       onSort={toggleBreakdownSort}
                     />
-                    <ScanSortTh
-                      column="change_pct"
-                      label="%chng"
-                      sort={breakdownSort}
-                      onSort={toggleBreakdownSort}
-                    />
-                    <ScanSortTh
-                      column="ltp"
-                      label="LTP"
-                      sort={breakdownSort}
-                      onSort={toggleBreakdownSort}
-                    />
                   </tr>
                 </thead>
                 <tbody>
                   {breakdownRows.length === 0 ? (
                     <tr>
-                      <td colSpan={12}>No stocks below the 09:15-09:30 range low.</td>
+                      <td colSpan={9}>No stocks below the 09:15-09:30 range low.</td>
                     </tr>
                   ) : (
                     sortedBreakdownRows.map((row) => (
@@ -700,12 +667,14 @@ const Breakout930: React.FC = () => {
                             {row.symbol}
                           </Link>
                         </td>
+                        <td className="nifty-ltp-live">
+                          {displayLtp(row.symbol, row.latest_price)}
+                        </td>
+                        <td className={(row.change_pct ?? 0) >= 0 ? "nifty-positive" : ""} style={(row.change_pct ?? 0) < 0 ? { color: "#b91c1c", fontWeight: 600 } : undefined}>
+                          {row.change_pct == null ? "-" : `${formatAmount(row.change_pct)}%`}
+                        </td>
                         <td>{formatAmount(row.high_915)}</td>
                         <td>{formatAmount(row.low_930)}</td>
-                        <td>{row.prev_close == null ? "-" : formatAmount(row.prev_close)}</td>
-                        <td>{row.open == null ? "-" : formatAmount(row.open)}</td>
-                        <td>{row.high == null ? "-" : formatAmount(row.high)}</td>
-                        <td>{row.low == null ? "-" : formatAmount(row.low)}</td>
                         <td>{row.volume_shares == null ? "-" : Math.round(row.volume_shares).toLocaleString("en-IN")}</td>
                         <td>{row.value_lakhs == null ? "-" : formatAmount(row.value_lakhs)}</td>
                         <td>{row.ca ?? "-"}</td>
@@ -714,12 +683,6 @@ const Breakout930: React.FC = () => {
                           <span className="nifty-muted" style={{ marginLeft: 6 }}>
                             ({row.price_source === "ltp" ? "at scan" : "last 5m close"})
                           </span>
-                        </td>
-                        <td className={(row.change_pct ?? 0) >= 0 ? "nifty-positive" : ""} style={(row.change_pct ?? 0) < 0 ? { color: "#b91c1c", fontWeight: 600 } : undefined}>
-                          {row.change_pct == null ? "-" : `${formatAmount(row.change_pct)}%`}
-                        </td>
-                        <td className="nifty-ltp-live">
-                          {displayLtp(row.symbol, row.latest_price)}
                         </td>
                       </tr>
                     ))

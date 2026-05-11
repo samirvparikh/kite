@@ -1,9 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import API from "../services/api";
 import { parseDashDate, useAppShell } from "../context/AppShellContext";
 import CenteredLoader from "../components/CenteredLoader";
-import KiteConnectNotice from "../components/KiteConnectNotice";
 import {
   getApiErrorMessage,
   isKiteOrBrokerSessionError,
@@ -11,6 +10,7 @@ import {
 import "./Scanner.css";
 
 const TITLES: Record<string, string> = {
+  "my-today-fno": "My Today F&O",
   "fno-stocks": "List F&O Stock",
   sector: "Sector View",
   "5min-breakout": "5 Min Breakout",
@@ -48,6 +48,11 @@ type StockRow = {
   scan_ref?: number;
   diff?: number;
   side?: "breakout" | "breakdown";
+  oi_change_pct?: number;
+  oi_start?: number;
+  oi_end?: number;
+  ref_price_925?: number;
+  fut_tradingsymbol?: string;
 };
 
 type KiteQuoteEnvelope = {
@@ -72,7 +77,13 @@ type SortDir = "asc" | "desc";
 type BreakSortState = { col: BreakSortCol; dir: SortDir };
 type SectorSortCol = "name" | "stocks" | "change_pct";
 type SectorSortState = { col: SectorSortCol; dir: SortDir };
-type StockSortCol = "symbol" | "exchange" | "last_price" | "change_pct" | "change_rs";
+type StockSortCol =
+  | "symbol"
+  | "exchange"
+  | "last_price"
+  | "change_pct"
+  | "change_rs"
+  | "oi_change_pct";
 type StockSortState = { col: StockSortCol; dir: SortDir };
 
 function normalizeBreakRow(raw: StockRow): StockRow {
@@ -140,20 +151,29 @@ function formatAmount(value: unknown): string {
   return Number.isFinite(n) ? n.toFixed(2) : "0.00";
 }
 
+/** Aligns URL `type` with comparisons (handles spaces / casing). */
+function normalizeScannerTypeParam(raw: string | null): string {
+  const s = (raw ?? "fno-stocks").trim().toLowerCase();
+  return s || "fno-stocks";
+}
+
 function apiTypeParam(pageType: string): string {
-  if (pageType === "fno-stocks") return "fno-stocks";
-  if (pageType === "sector") return "sector";
-  if (pageType === "5min-breakout") return "5min-breakout";
-  if (pageType === "top-losers") return "top-losers";
+  const t = pageType.trim().toLowerCase();
+  if (t === "fno-stocks") return "fno-stocks";
+  if (t === "sector") return "sector";
+  if (t === "5min-breakout") return "5min-breakout";
+  if (t === "top-losers") return "top-losers";
+  if (t === "top-gainers") return "top-gainers";
+  if (t === "my-today-fno") return "my-today-fno";
   return "top-gainers";
 }
 
 const Scanner: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { setScanDate } = useAppShell();
+  const { setScanDate, setKiteApiErrorMessage } = useAppShell();
   const isPublicPage = location.pathname.startsWith("/scanners/");
-  const type = searchParams.get("type") ?? "fno-stocks";
+  const type = normalizeScannerTypeParam(searchParams.get("type"));
   const date = searchParams.get("date") ?? istToday();
   const universeMode = searchParams.get("universe") ?? "top-volume";
 
@@ -169,6 +189,12 @@ const Scanner: React.FC = () => {
   const [liveLtp, setLiveLtp] = useState<Record<string, number>>({});
   /** Bump to re-fetch scanner API without changing URL (5 Min Breakout Refresh). */
   const [reloadNonce, setReloadNonce] = useState(0);
+  const [myTodayFnoScanNonce, setMyTodayFnoScanNonce] = useState(0);
+  const [myTodayFnoMeta, setMyTodayFnoMeta] = useState<{
+    totalScanned?: number;
+    window?: string;
+    thresholds?: { minAbsChangePct: number; minAbsOiChangePct: number };
+  } | null>(null);
   const [sectorSort, setSectorSort] = useState<SectorSortState>({
     col: "change_pct",
     dir: "desc",
@@ -189,6 +215,17 @@ const Scanner: React.FC = () => {
   const pageTitle = TITLES[type] ?? "Scanner";
   const isSector = type === "sector";
   const is5minBreakout = type === "5min-breakout";
+  const isMyTodayFno = type === "my-today-fno";
+
+  useEffect(() => {
+    setMyTodayFnoScanNonce(0);
+  }, [date, type]);
+
+  useLayoutEffect(() => {
+    if (isMyTodayFno && myTodayFnoScanNonce === 0) {
+      setLoading(false);
+    }
+  }, [isMyTodayFno, myTodayFnoScanNonce]);
 
   function sortedBreakRows(rows: StockRow[], sort: BreakSortState): StockRow[] {
     const mul = sort.dir === "asc" ? 1 : -1;
@@ -359,6 +396,8 @@ const Scanner: React.FC = () => {
         cmp = a.last_price - b.last_price;
       } else if (stockSort.col === "change_pct") {
         cmp = a.change_pct - b.change_pct;
+      } else if (stockSort.col === "oi_change_pct") {
+        cmp = (a.oi_change_pct ?? 0) - (b.oi_change_pct ?? 0);
       } else {
         cmp = a.change_rs - b.change_rs;
       }
@@ -390,16 +429,94 @@ const Scanner: React.FC = () => {
     if (d) setScanDate(d);
   }, [searchParams, setScanDate]);
 
+  /** Surface Kite API errors in header only (see Header + AppShellContext). */
+  useEffect(() => {
+    if (error && isKiteOrBrokerSessionError(error)) {
+      setKiteApiErrorMessage(error);
+    } else {
+      setKiteApiErrorMessage(null);
+    }
+    return () => setKiteApiErrorMessage(null);
+  }, [error, setKiteApiErrorMessage]);
+
   useEffect(() => {
     let cancelled = false;
+
+    if (type === "my-today-fno") {
+      if (myTodayFnoScanNonce === 0) {
+        setLoading(false);
+        setError(null);
+        setSectorRows([]);
+        setStockRows([]);
+        setBreakoutRows([]);
+        setBreakdownRows([]);
+        setErrorRows([]);
+        setSource("");
+        setMyTodayFnoMeta(null);
+        setLiveLtp({});
+        return () => {
+          cancelled = true;
+        };
+      }
+
+      setLoading(true);
+      setError(null);
+      setLiveLtp({});
+
+      API.get<{
+        date: string;
+        source?: string;
+        stockRows?: StockRow[];
+        rows?: StockRow[];
+        errorRows?: Array<{ symbol: string; reason: string }>;
+        totalScanned?: number;
+        window?: string;
+        thresholds?: { minAbsChangePct: number; minAbsOiChangePct: number };
+      }>(`/api/market/my-today-fno-scan?date=${encodeURIComponent(date)}`)
+        .then((res) => {
+          if (cancelled) return;
+          const raw = res.data.stockRows ?? res.data.rows ?? [];
+          const rows = raw.map(normalizeBreakRow);
+          setSource(res.data.source ?? "");
+          setSectorRows([]);
+          setStockRows(rows);
+          setBreakoutRows([]);
+          setBreakdownRows([]);
+          setErrorRows(res.data.errorRows ?? []);
+          setMyTodayFnoMeta({
+            totalScanned: res.data.totalScanned,
+            window: res.data.window,
+            thresholds: res.data.thresholds,
+          });
+        })
+        .catch((err: unknown) => {
+          if (cancelled) return;
+          setError(getApiErrorMessage(err));
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+
+      return () => {
+        cancelled = true;
+      };
+    }
+
     setLoading(true);
     setError(null);
     setLiveLtp({});
+    setMyTodayFnoMeta(null);
 
     const q = new URLSearchParams();
     q.set("date", date);
-    q.set("type", apiTypeParam(type));
+    if (type !== "fno-stocks") {
+      q.set("type", apiTypeParam(type));
+    }
     if (type === "5min-breakout") q.set("universe", universeMode);
+    const endpoint =
+      type === "fno-stocks"
+        ? `/api/market/fno-stocks?${q.toString()}`
+        : `/api/market/nifty50-scanner?${q.toString()}`;
 
     API.get<{
       date: string;
@@ -411,7 +528,7 @@ const Scanner: React.FC = () => {
       errorRows?: Array<{ symbol: string; reason: string }>;
       universeMode?: string;
       totalSymbols?: number;
-    }>(`/api/market/nifty50-scanner?${q.toString()}`)
+    }>(endpoint)
       .then((res) => {
         if (cancelled) return;
         const rows = (res.data.stockRows ?? []).map(normalizeBreakRow);
@@ -443,7 +560,7 @@ const Scanner: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [type, date, universeMode, reloadNonce]);
+  }, [type, date, universeMode, reloadNonce, myTodayFnoScanNonce]);
 
   function setUniverseMode(next: "all" | "top-volume") {
     const q = new URLSearchParams(searchParams);
@@ -506,7 +623,7 @@ const Scanner: React.FC = () => {
     return formatAmount(scanPrice);
   }
 
-  if (loading) {
+  if (loading && !(isMyTodayFno && myTodayFnoScanNonce === 0)) {
     return (
       <div className="scanner-page px-4 pb-10 pt-2 md:px-6">
         <div className="scanner-container mx-auto max-w-[1100px]">
@@ -527,7 +644,30 @@ const Scanner: React.FC = () => {
               {source ? (
                 <>
                   {" "}
-                  · Source: <strong>{source}</strong> (NIFTY 50 market via Kite)
+                  · Source: <strong>{source}</strong>
+                  {isMyTodayFno ? (
+                    <>
+                      {" "}
+                      · Window:{" "}
+                      <strong>{myTodayFnoMeta?.window ?? "09:15–09:25 IST"}</strong>
+                      {myTodayFnoMeta?.thresholds ? (
+                        <>
+                          {" "}
+                          · |Δ price| &gt;{" "}
+                          <strong>{myTodayFnoMeta.thresholds.minAbsChangePct}%</strong>, |Δ OI| &gt;{" "}
+                          <strong>{myTodayFnoMeta.thresholds.minAbsOiChangePct}%</strong>
+                        </>
+                      ) : null}
+                      {myTodayFnoMeta?.totalScanned != null ? (
+                        <>
+                          {" "}
+                          · Scanned: <strong>{myTodayFnoMeta.totalScanned}</strong> symbols
+                        </>
+                      ) : null}
+                    </>
+                  ) : (
+                    <> (NIFTY 50 market via Kite)</>
+                  )}
                 </>
               ) : null}
               {isSector && selectedSector ? (
@@ -589,6 +729,60 @@ const Scanner: React.FC = () => {
                 </button>
               </div>
             ) : null}
+            {isMyTodayFno ? (
+              <p className="scanner-muted" style={{ margin: "8px 0 0", maxWidth: 760 }}>
+                Listed <strong>F&amp;O underlyings</strong> only. Metrics use{" "}
+                <strong>09:15–09:25 IST</strong> 5-minute candles: cash price vs{" "}
+                <strong>previous close</strong>, and OI on the <strong>nearest expiry future</strong>.
+                A row appears only if <strong>|Δ price vs prev. close| &gt; 2%</strong> and{" "}
+                <strong>|Δ OI in window| &gt; 7%</strong>. Pick any past session date—data comes from Kite
+                historical candles. Use <strong>Run Scan</strong> to load; <strong>Refresh</strong> repeats the
+                same date.
+              </p>
+            ) : null}
+            {isMyTodayFno ? (
+              <div
+                className="scanner-muted"
+                style={{
+                  marginTop: 8,
+                  display: "flex",
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                  gap: 8,
+                }}
+              >
+                <span>
+                  Scan date:{" "}
+                  <input
+                    type="date"
+                    value={date}
+                    onChange={(e) => {
+                      const q = new URLSearchParams(searchParams);
+                      q.set("date", e.target.value || istToday());
+                      setSearchParams(q, { replace: true });
+                    }}
+                    className="scanner-select"
+                    style={{ marginLeft: 6, minWidth: 150 }}
+                  />
+                </span>
+                <button
+                  type="button"
+                  className="scanner-refresh-btn"
+                  onClick={() => setMyTodayFnoScanNonce((n) => n + 1)}
+                >
+                  Run Scan
+                </button>
+                <button
+                  type="button"
+                  className="scanner-refresh-btn"
+                  title="Fetch again for the same date"
+                  disabled={myTodayFnoScanNonce === 0}
+                  onClick={() => setReloadNonce((n) => n + 1)}
+                >
+                  Refresh
+                </button>
+              </div>
+            ) : null}
             {type === "fno-stocks" ? (
               <div
                 className="scanner-muted"
@@ -636,7 +830,6 @@ const Scanner: React.FC = () => {
           </Link>
         </div>
 
-        <KiteConnectNotice message={error} />
         {error && !isKiteOrBrokerSessionError(error) && (
           <div
             style={{
@@ -796,6 +989,7 @@ const Scanner: React.FC = () => {
             ) : null}
           </>
         ) : (
+        <>
         <div className="scanner-card">
           <table>
             <thead>
@@ -826,6 +1020,33 @@ const Scanner: React.FC = () => {
                   <th>Net Chg ₹</th>
                   <th>R. Factor %</th>
                 </tr>
+              ) : isMyTodayFno ? (
+                <tr>
+                  <th>
+                    <button type="button" className="scanner-th-sort" onClick={() => toggleStockSort("symbol")}>
+                      Symbol{stockSort.col === "symbol" ? (stockSort.dir === "asc" ? " ▲" : " ▼") : ""}
+                    </button>
+                  </th>
+                  <th>Prev close</th>
+                  <th title="Cash: close of last 5m bar in 09:15–09:25">Ref (window)</th>
+                  <th>
+                    <button type="button" className="scanner-th-sort" onClick={() => toggleStockSort("change_pct")}>
+                      Δ % vs prev.{stockSort.col === "change_pct" ? (stockSort.dir === "asc" ? " ▲" : " ▼") : ""}
+                    </button>
+                  </th>
+                  <th>
+                    <button type="button" className="scanner-th-sort" onClick={() => toggleStockSort("change_rs")}>
+                      Net Chg ₹{stockSort.col === "change_rs" ? (stockSort.dir === "asc" ? " ▲" : " ▼") : ""}
+                    </button>
+                  </th>
+                  <th>OI start</th>
+                  <th>OI end</th>
+                  <th>
+                    <button type="button" className="scanner-th-sort" onClick={() => toggleStockSort("oi_change_pct")}>
+                      OI Δ %{stockSort.col === "oi_change_pct" ? (stockSort.dir === "asc" ? " ▲" : " ▼") : ""}
+                    </button>
+                  </th>
+                </tr>
               ) : is5minBreakout ? (
                 <tr>
                   <th>Symbol</th>
@@ -843,23 +1064,18 @@ const Scanner: React.FC = () => {
                     </button>
                   </th>
                   <th>
-                    <button type="button" className="scanner-th-sort" onClick={() => toggleStockSort("exchange")}>
-                      Exchange{stockSort.col === "exchange" ? (stockSort.dir === "asc" ? " ▲" : " ▼") : ""}
-                    </button>
-                  </th>
-                  <th>
                     <button type="button" className="scanner-th-sort" onClick={() => toggleStockSort("last_price")}>
-                      Last / Close{stockSort.col === "last_price" ? (stockSort.dir === "asc" ? " ▲" : " ▼") : ""}
+                      LTP{stockSort.col === "last_price" ? (stockSort.dir === "asc" ? " ▲" : " ▼") : ""}
                     </button>
                   </th>
                   <th>
                     <button type="button" className="scanner-th-sort" onClick={() => toggleStockSort("change_pct")}>
-                      Change %{stockSort.col === "change_pct" ? (stockSort.dir === "asc" ? " ▲" : " ▼") : ""}
+                      %Change{stockSort.col === "change_pct" ? (stockSort.dir === "asc" ? " ▲" : " ▼") : ""}
                     </button>
                   </th>
                   <th>
-                    <button type="button" className="scanner-th-sort" onClick={() => toggleStockSort("change_rs")}>
-                      Net Chg ₹{stockSort.col === "change_rs" ? (stockSort.dir === "asc" ? " ▲" : " ▼") : ""}
+                    <button type="button" className="scanner-th-sort" onClick={() => toggleStockSort("oi_change_pct")}>
+                      %Change in OI{stockSort.col === "oi_change_pct" ? (stockSort.dir === "asc" ? " ▲" : " ▼") : ""}
                     </button>
                   </th>
                 </tr>
@@ -969,8 +1185,102 @@ const Scanner: React.FC = () => {
                 )
               ) : stockRows.length === 0 ? (
                 <tr>
-                  <td colSpan={is5minBreakout ? 6 : 5}>No data available.</td>
+                  <td
+                    colSpan={
+                      is5minBreakout ? 6 : isMyTodayFno ? 8 : type === "fno-stocks" ? 4 : 5
+                    }
+                  >
+                    {isMyTodayFno && myTodayFnoScanNonce === 0
+                      ? "Select scan date and click Run Scan."
+                      : isMyTodayFno
+                        ? "No stocks matched both filters for this session."
+                        : type === "fno-stocks"
+                          ? "No F&O equities in this list — connect Zerodha and refresh, or pick another date."
+                          : "No data available."}
+                  </td>
                 </tr>
+              ) : type === "fno-stocks" ? (
+                sortedStockRows.map((row) => {
+                  const ch = row.change_pct;
+                  const oiCh = row.oi_change_pct;
+                  return (
+                    <tr key={`fno-${row.exchange}-${row.symbol}`}>
+                      <td>
+                        <a
+                          className="scanner-symbol-link"
+                          href={`https://www.nseindia.com/option-chain?symbol=${encodeURIComponent(
+                            row.symbol
+                          )}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          {row.symbol}
+                        </a>
+                      </td>
+                      <td>Rs {formatAmount(row.last_price)}</td>
+                      <td className={ch >= 0 ? "scanner-positive" : "scanner-negative"}>
+                        {formatAmount(ch)}%
+                      </td>
+                      <td className={oiCh != null && oiCh >= 0 ? "scanner-positive" : "scanner-negative"}>
+                        {oiCh == null ? "-" : `${formatAmount(oiCh)}%`}
+                      </td>
+                    </tr>
+                  );
+                })
+              ) : isMyTodayFno ? (
+                sortedStockRows.map((row) => {
+                  const ch = row.change_pct;
+                  const rs = row.change_rs;
+                  const oiCh = row.oi_change_pct ?? 0;
+                  const pref = row.prev_close ?? row.last_price - row.change_rs;
+                  return (
+                    <tr key={`mtf-${row.exchange}-${row.symbol}`}>
+                      <td>
+                        <Link
+                          className="scanner-symbol-link"
+                          to={`/chart?exchange=${encodeURIComponent(row.exchange)}&symbol=${encodeURIComponent(row.symbol)}&date=${encodeURIComponent(date)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          {row.symbol}
+                        </Link>
+                      </td>
+                      <td>Rs {formatAmount(pref)}</td>
+                      <td>Rs {formatAmount(row.ref_price_925 ?? row.last_price)}</td>
+                      <td
+                        className={
+                          ch >= 0 ? "scanner-positive" : "scanner-negative"
+                        }
+                      >
+                        {formatAmount(ch)}%
+                      </td>
+                      <td
+                        className={
+                          rs >= 0 ? "scanner-positive" : "scanner-negative"
+                        }
+                      >
+                        Rs {formatAmount(rs)}
+                      </td>
+                      <td>
+                        {row.oi_start != null
+                          ? Math.round(row.oi_start).toLocaleString("en-IN")
+                          : "—"}
+                      </td>
+                      <td>
+                        {row.oi_end != null
+                          ? Math.round(row.oi_end).toLocaleString("en-IN")
+                          : "—"}
+                      </td>
+                      <td
+                        className={
+                          oiCh >= 0 ? "scanner-positive" : "scanner-negative"
+                        }
+                      >
+                        {formatAmount(oiCh)}%
+                      </td>
+                    </tr>
+                  );
+                })
               ) : is5minBreakout ? (
                 stockRows.map((row) => {
                   const ch = row.change_pct;
@@ -1010,7 +1320,7 @@ const Scanner: React.FC = () => {
                   );
                 })
               ) : (
-                (type === "fno-stocks" ? sortedStockRows : stockRows).map((row) => {
+                stockRows.map((row) => {
                   const ch = row.change_pct;
                   const rs = row.change_rs;
                   return (
@@ -1048,6 +1358,30 @@ const Scanner: React.FC = () => {
             </tbody>
           </table>
         </div>
+        {isMyTodayFno && errorRows.length > 0 ? (
+          <div className="scanner-card" style={{ marginTop: 16 }}>
+            <div className="scanner-muted" style={{ marginBottom: 8 }}>
+              Skipped / errors ({errorRows.length})
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                {errorRows.map((er, i) => (
+                  <tr key={`mtf-err-${er.symbol}-${i}-${er.reason}`}>
+                    <td>{er.symbol}</td>
+                    <td>{er.reason}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+        </>
         )}
       </div>
     </div>

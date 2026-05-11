@@ -3,7 +3,6 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import API from "../services/api";
 import { parseDashDate, useAppShell } from "../context/AppShellContext";
 import CenteredLoader from "../components/CenteredLoader";
-import KiteConnectNotice from "../components/KiteConnectNotice";
 import {
   getApiErrorMessage,
   isKiteOrBrokerSessionError,
@@ -58,7 +57,7 @@ function parseRefreshSec(raw: string | null): number {
 const OptionBias: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { setScanDate } = useAppShell();
+  const { setScanDate, setKiteApiErrorMessage } = useAppShell();
   const isPublicPage = location.pathname.startsWith("/scanners/");
 
   const wingsParam = parseInt(searchParams.get("wings") ?? "5", 10);
@@ -112,6 +111,15 @@ const OptionBias: React.FC = () => {
     const t = window.setInterval(() => void load(), refreshSec * 1000);
     return () => window.clearInterval(t);
   }, [load, refreshSec]);
+
+  useEffect(() => {
+    if (error && isKiteOrBrokerSessionError(error)) {
+      setKiteApiErrorMessage(error);
+    } else {
+      setKiteApiErrorMessage(null);
+    }
+    return () => setKiteApiErrorMessage(null);
+  }, [error, setKiteApiErrorMessage]);
 
   function setWings(next: number) {
     const q = new URLSearchParams(searchParams);
@@ -280,7 +288,6 @@ const OptionBias: React.FC = () => {
           </Link>
         </div>
 
-        <KiteConnectNotice message={error} />
         {error && !isKiteOrBrokerSessionError(error) && (
           <div className="nifty-card ob-error" role="alert">
             {error}

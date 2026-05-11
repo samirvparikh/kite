@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "nodemon server.js",
     "db:create": "node scripts/create-tables.cjs",
     "db:migrate-rbac": "node scripts/apply-rbac-migration.cjs",
     "db:set-samir-admin": "node scripts/set-samir-admin.cjs",
@@ -28,5 +28,8 @@
     "jsonwebtoken": "^9.0.3",
     "mysql2": "^3.22.3",
     "qs": "^6.15.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
   }
 }

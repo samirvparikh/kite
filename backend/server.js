@@ -64,6 +64,8 @@ app.get('/api', (req, res) => {
             'GET /api/kite/portfolio/holdings',
             'GET /api/kite/portfolio/positions',
             'GET /api/market/nifty50-scanner?date=YYYY-MM-DD&type=sector|top-gainers|top-losers|5min-breakout (5min-breakout scans NSE EQ universe)',
+            'GET /api/market/fno-stocks?date=YYYY-MM-DD (NFO-FUT underlyings only)',
+            'GET /api/market/my-today-fno-scan?date=YYYY-MM-DD (F&O names only: |price move from prev close to 09:25| > 2% AND |OI change 09:15–09:25 on front-month fut| > 7%)',
             'GET /api/kite/quote?i=NSE:INFY&i=...',
             'GET /api/scan/nifty50-920-breakout?date=YYYY-MM-DD',
             'GET /api/scan/nifty50-930-breakout?date=YYYY-MM-DD',
@@ -83,6 +85,8 @@ app.get('/api', (req, res) => {
             'POST /api/admin/settings { fieldName, fieldValue } (admin.settings)',
             'PATCH /api/admin/settings/:id { fieldName?, fieldValue? } (admin.settings)',
             'DELETE /api/admin/settings/:id (admin.settings)',
+            'GET /api/admin/kite-global-session (admin.settings)',
+            'PATCH | PUT /api/admin/kite-global-session { kiteUserId?, kiteAccessToken?, kitePublicToken?, refreshToken? } (admin.settings)',
         ],
         auth: 'Send header: Authorization: Bearer <app_token>. Legacy direct Kite token also supported. Zerodha access_token and refresh_token (if any) are stored once in table kite_global_session (id=1) for the whole app; renewed via Kite POST /session/refresh_token when the session is stale or after Kite API auth errors.',
     });
@@ -1641,6 +1645,107 @@ app.post(
     }
 );
 
+/** Admin: read/update shared Kite row — register before `/api/admin/settings/:id` (path specificity). */
+async function handleAdminKiteGlobalSessionUpdate(req, res) {
+    const map = [
+        ['kiteUserId', 'kite_user_id', 64],
+        ['kiteAccessToken', 'kite_access_token', 512],
+        ['kitePublicToken', 'kite_public_token', 512],
+        ['refreshToken', 'refresh_token', 8192],
+    ];
+    const sets = [];
+    const params = [];
+    for (const [jsonKey, col, maxLen] of map) {
+        if (!Object.prototype.hasOwnProperty.call(req.body ?? {}, jsonKey)) {
+            continue;
+        }
+        const raw = req.body[jsonKey];
+        if (raw === null) {
+            sets.push(`${col} = NULL`);
+            continue;
+        }
+        const s = String(raw ?? '').trim();
+        if (s === '') {
+            sets.push(`${col} = NULL`);
+            continue;
+        }
+        if (s.length > maxLen) {
+            return res
+                .status(400)
+                .json({ error: `${jsonKey} exceeds max length (${maxLen})` });
+        }
+        sets.push(`${col} = ?`);
+        params.push(s);
+    }
+    if (sets.length === 0) {
+        return res.status(400).json({
+            error:
+                'No fields to update (send kiteUserId, kiteAccessToken, kitePublicToken, refreshToken)',
+        });
+    }
+    try {
+        await ensureKiteGlobalSessionTable();
+        params.push(1);
+        await db.query(
+            `UPDATE kite_global_session SET ${sets.join(', ')} WHERE id = ?`,
+            params
+        );
+        const [rows] = await db.query(
+            `SELECT id, kite_user_id, kite_access_token, kite_public_token,
+                    refresh_token, updated_at
+             FROM kite_global_session WHERE id = 1 LIMIT 1`
+        );
+        return res.json({ session: rows?.[0] });
+    } catch (error) {
+        console.error(error.message);
+        return res
+            .status(500)
+            .json({ error: 'Failed to update kite global session' });
+    }
+}
+
+app.get(
+    '/api/admin/kite-global-session',
+    requireAuth,
+    requirePermission('admin.settings'),
+    async (_req, res) => {
+        try {
+            await ensureKiteGlobalSessionTable();
+            const [rows] = await db.query(
+                `SELECT id, kite_user_id, kite_access_token, kite_public_token,
+                        refresh_token, updated_at
+                 FROM kite_global_session WHERE id = 1 LIMIT 1`
+            );
+            const row = rows?.[0];
+            if (!row) {
+                return res
+                    .status(404)
+                    .json({ error: 'kite_global_session row id=1 not found' });
+            }
+            return res.json({ session: row });
+        } catch (error) {
+            console.error(error.message);
+            return res
+                .status(500)
+                .json({ error: 'Failed to load kite global session' });
+        }
+    }
+);
+
+app.patch(
+    '/api/admin/kite-global-session',
+    requireAuth,
+    requirePermission('admin.settings'),
+    handleAdminKiteGlobalSessionUpdate
+);
+
+app.put(
+    '/api/admin/kite-global-session',
+    requireAuth,
+    requirePermission('admin.settings'),
+    handleAdminKiteGlobalSessionUpdate
+);
+
 app.patch(
     '/api/admin/settings/:id',
     requireAuth,
@@ -2349,6 +2454,20 @@ function pctChangeFromQuotes(q) {
     };
 }
 
+function oiChangePctFromQuote(q) {
+    const candidates = [
+        q?.oi_change_pct,
+        q?.oi_change_percentage,
+        q?.oi_change_percent,
+        q?.oiChangePct,
+    ];
+    for (const v of candidates) {
+        const n = parseFloat(v ?? NaN);
+        if (Number.isFinite(n)) return n;
+    }
+    return null;
+}
+
 async function fetchQuoteMap(accessToken) {
     const instruments = NIFTY50_SYMBOLS.map((s) => `NSE:${s}`);
     const q = instruments.map((i) => `i=${encodeURIComponent(i)}`).join('&');
@@ -2367,15 +2486,19 @@ async function fetchQuoteMapForSymbols(accessToken, symbols) {
     for (let i = 0; i < symbols.length; i += chunkSize) {
         const batch = symbols.slice(i, i + chunkSize);
         const instruments = batch.map((s) => `NSE:${s}`);
-        const q = instruments.map((k) => `i=${encodeURIComponent(k)}`).join('&');
+        const cleaned = instruments.map((k) => k.replace(/"/g, ''));
+        const q = cleaned.map((k) => `i=${encodeURIComponent(k)}`).join('&');
+        // console.log(q);
         const quoteRes = await axios.get(`https://api.kite.trade/quote?${q}`, {
             headers: {
                 'X-Kite-Version': '3',
                 Authorization: `token ${API_KEY}:${accessToken}`,
             },
         });
+        // console.log(quoteRes.data?.data);
         Object.assign(out, quoteRes.data?.data ?? {});
     }
+    // console.log(out);
     return out;
 }
 
@@ -2386,6 +2509,15 @@ let NSE_EQ_UNIVERSE_CACHE = {
 let FNO_UNDERLYING_SYMBOLS_CACHE = {
     atMs: 0,
     symbols: [],
+};
+let FNO_FUT_UNDERLYING_SYMBOLS_CACHE = {
+    atMs: 0,
+    symbols: [],
+};
+/** Single cached instruments CSV (same URL as Kite instruments dump). */
+let INSTRUMENTS_CSV_CACHE = {
+    atMs: 0,
+    text: '',
 };
 
 async function loadNseEqUniverse(accessToken) {
@@ -2474,6 +2606,312 @@ async function loadFnoUnderlyingSymbols(accessToken) {
     return symbols;
 }
 
+/**
+ * F&O stocks list from Kite instruments CSV:
+ * - segment column (index 10) must be NFO-FUT
+ * - name column (index 3) used as underlying symbol
+ */
+async function loadFnoFutUnderlyingSymbols(accessToken) {
+    const now = Date.now();
+    if (
+        Array.isArray(FNO_FUT_UNDERLYING_SYMBOLS_CACHE.symbols) &&
+        FNO_FUT_UNDERLYING_SYMBOLS_CACHE.symbols.length > 0 &&
+        now - FNO_FUT_UNDERLYING_SYMBOLS_CACHE.atMs < 15 * 60 * 1000
+    ) {
+        return FNO_FUT_UNDERLYING_SYMBOLS_CACHE.symbols;
+    }
+    const csv = await fetchInstrumentsCsvCached(accessToken);
+    const lines = csv.split('\n');
+    if (lines.length < 2) return [];
+    const fnoStocks = new Set();
+    for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        const row = line.split(',');
+        if (row.length < 12) continue;
+        const symbol = String(row[3] ?? '')
+            .replace(/"/g, '')
+            .trim();
+        const segment = String(row[row.length - 2] ?? '')
+            .replace(/"/g, '')
+            .trim();
+        const exchange = String(row[row.length - 1] ?? '')
+            .replace(/"/g, '')
+            .trim();
+        if (!symbol) continue;
+        if (exchange !== 'NFO') continue;
+        if (segment !== 'NFO-FUT') continue;
+        fnoStocks.add(symbol);
+    }
+    const symbols = [...fnoStocks].sort();
+    FNO_FUT_UNDERLYING_SYMBOLS_CACHE = { atMs: now, symbols };
+    return symbols;
+}
+
+const FUT_EXPIRY_MONTHS = {
+    JAN: 0,
+    FEB: 1,
+    MAR: 2,
+    APR: 3,
+    MAY: 4,
+    JUN: 5,
+    JUL: 6,
+    AUG: 7,
+    SEP: 8,
+    OCT: 9,
+    NOV: 10,
+    DEC: 11,
+};
+
+/** Kite NFO CSV expiry cell → YYYY-MM-DD (comparison only). */
+function futExpiryCellToYmd(expiryStr) {
+    const m = /^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/.exec(String(expiryStr ?? '').trim());
+    if (!m) return null;
+    const day = parseInt(m[1], 10);
+    const mon = FUT_EXPIRY_MONTHS[m[2].toUpperCase()];
+    const year = parseInt(m[3], 10);
+    if (
+        mon == null ||
+        !Number.isFinite(day) ||
+        !Number.isFinite(year) ||
+        day < 1 ||
+        day > 31
+    ) {
+        return null;
+    }
+    const mm = String(mon + 1).padStart(2, '0');
+    const dd = String(day).padStart(2, '0');
+    return `${year}-${mm}-${dd}`;
+}
+
+async function fetchInstrumentsCsvCached(accessToken) {
+    const now = Date.now();
+    if (
+        INSTRUMENTS_CSV_CACHE.text &&
+        now - INSTRUMENTS_CSV_CACHE.atMs < 15 * 60 * 1000
+    ) {
+        return INSTRUMENTS_CSV_CACHE.text;
+    }
+    const res = await axios.get('https://api.kite.trade/instruments', {
+        headers: {
+            'X-Kite-Version': '3',
+            Authorization: `token ${API_KEY}:${accessToken}`,
+        },
+        responseType: 'text',
+    });
+    const text = String(res.data ?? '');
+    INSTRUMENTS_CSV_CACHE = { atMs: now, text };
+    return text;
+}
+
+/**
+ * Nearest expiry NFO-FUT per underlying valid on `asOfYmd` (expiry >= session date).
+ * @returns Map<underlyingName, { instrumentToken, expiryYmd, tradingsymbol }>
+ */
+async function buildFrontMonthFutRowMap(accessToken, asOfYmd) {
+    const csv = await fetchInstrumentsCsvCached(accessToken);
+    const lines = csv.split('\n');
+    const byName = new Map();
+    for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        const cols = line.split(',');
+        if (cols.length < 12) continue;
+        const instrumentToken = parseInt(String(cols[0] ?? '').trim(), 10);
+        const tradingsymbol = String(cols[2] ?? '').trim();
+        const name = String(cols[3] ?? '').trim();
+        const expiryRaw = String(cols[5] ?? '').trim();
+        const instrumentType = String(cols[cols.length - 3] ?? '').trim();
+        const segment = String(cols[cols.length - 2] ?? '').trim();
+        const exchange = String(cols[cols.length - 1] ?? '').trim();
+        if (!name || !tradingsymbol) continue;
+        if (exchange !== 'NFO' || segment !== 'NFO-FUT' || instrumentType !== 'FUT') {
+            continue;
+        }
+        if (!Number.isFinite(instrumentToken)) continue;
+        const expiryYmd = futExpiryCellToYmd(expiryRaw);
+        if (!expiryYmd || expiryYmd < asOfYmd) continue;
+        const prev = byName.get(name);
+        if (!prev || expiryYmd < prev.expiryYmd) {
+            byName.set(name, {
+                instrumentToken,
+                expiryYmd,
+                tradingsymbol,
+            });
+        }
+    }
+    return byName;
+}
+
+function oiFromDerivativeCandle(c) {
+    if (!Array.isArray(c) || c.length < 7) return NaN;
+    return parseFloat(c[6] ?? NaN);
+}
+
+async function buildMyTodayFnoScan(accessToken, selectedDate) {
+    const todayIST = istDateString();
+    const minAbsChangePct = 2;
+    const minAbsOiChangePct = 7;
+    const quoteUniverse = await loadNseEqUniverse(accessToken);
+    const fnoUnderlyingSymbols = await loadFnoUnderlyingSymbols(accessToken);
+    const fnoSet = new Set(fnoUnderlyingSymbols);
+    const symbols = quoteUniverse.filter((s) => fnoSet.has(s)).sort();
+    const quoteMap = await fetchQuoteMapForSymbols(accessToken, symbols);
+    const futMap = await buildFrontMonthFutRowMap(accessToken, selectedDate);
+
+    const rows = [];
+    const errorRows = [];
+    const conc = 8;
+
+    async function runSymbol(symbol) {
+        const eqKey = `NSE:${symbol}`;
+        const eqToken = quoteMap[eqKey]?.instrument_token;
+        const fut = futMap.get(symbol);
+        if (eqToken == null || eqToken === '') {
+            errorRows.push({ symbol, reason: 'EQ instrument token not found' });
+            return;
+        }
+        if (!fut) {
+            errorRows.push({ symbol, reason: 'No NFO-FUT row for underlying' });
+            return;
+        }
+
+        let prevClose = NaN;
+        if (selectedDate === todayIST) {
+            const q = quoteMap[eqKey];
+            prevClose = parseFloat(q?.ohlc?.close ?? NaN);
+        } else {
+            try {
+                prevClose = await fetchPrevCloseForDay(
+                    accessToken,
+                    eqToken,
+                    selectedDate
+                );
+            } catch (e) {
+                errorRows.push({
+                    symbol,
+                    reason: e.response?.data?.message || e.message || 'Prev close error',
+                });
+                return;
+            }
+        }
+        if (!Number.isFinite(prevClose) || prevClose <= 0) {
+            errorRows.push({ symbol, reason: 'Invalid previous close' });
+            return;
+        }
+
+        let eqCandles;
+        let futCandles;
+        try {
+            [eqCandles, futCandles] = await Promise.all([
+                fetchKite5MinuteCandlesForDay(accessToken, eqToken, selectedDate),
+                fetchKite5MinuteCandlesForDay(
+                    accessToken,
+                    fut.instrumentToken,
+                    selectedDate
+                ),
+            ]);
+        } catch (e) {
+            errorRows.push({
+                symbol,
+                reason: e.response?.data?.message || e.message || 'History error',
+            });
+            return;
+        }
+
+        const winEq = barsBetweenTimeInclusive(
+            eqCandles,
+            '09:15:00',
+            '09:25:00'
+        );
+        const winFut = barsBetweenTimeInclusive(
+            futCandles,
+            '09:15:00',
+            '09:25:00'
+        );
+        if (winEq.length === 0 || winFut.length === 0) {
+            errorRows.push({
+                symbol,
+                reason: 'No 5m bars in 09:15–09:25',
+            });
+            return;
+        }
+
+        const refPrice = parseFloat(winEq[winEq.length - 1]?.[4] ?? NaN);
+        if (!Number.isFinite(refPrice)) {
+            errorRows.push({ symbol, reason: 'Invalid reference close in window' });
+            return;
+        }
+
+        const changePct = ((refPrice - prevClose) / prevClose) * 100;
+        const changeRs = refPrice - prevClose;
+
+        const oiStart = oiFromDerivativeCandle(winFut[0]);
+        const oiEnd = oiFromDerivativeCandle(winFut[winFut.length - 1]);
+        if (
+            !Number.isFinite(oiStart) ||
+            oiStart <= 0 ||
+            !Number.isFinite(oiEnd)
+        ) {
+            errorRows.push({
+                symbol,
+                reason: 'OI missing on future candles',
+            });
+            return;
+        }
+
+        const oiChangePct = ((oiEnd - oiStart) / oiStart) * 100;
+
+        if (
+            Math.abs(changePct) <= minAbsChangePct ||
+            Math.abs(oiChangePct) <= minAbsOiChangePct
+        ) {
+            return;
+        }
+
+        rows.push({
+            symbol,
+            exchange: 'NSE',
+            last_price: refPrice,
+            change_pct: Number.isFinite(changePct) ? changePct : 0,
+            change_rs: Number.isFinite(changeRs) ? changeRs : 0,
+            sector: 'F&O',
+            prev_close: prevClose,
+            ref_price_925: refPrice,
+            oi_start: Math.round(oiStart),
+            oi_end: Math.round(oiEnd),
+            oi_change_pct: Number.isFinite(oiChangePct) ? oiChangePct : 0,
+            fut_tradingsymbol: fut.tradingsymbol,
+        });
+    }
+
+    for (let i = 0; i < symbols.length; i += conc) {
+        const batch = symbols.slice(i, i + conc);
+        await Promise.all(batch.map((s) => runSymbol(s)));
+    }
+
+    rows.sort(
+        (a, b) =>
+            Math.abs(b.change_pct) +
+            Math.abs(b.oi_change_pct) -
+            (Math.abs(a.change_pct) + Math.abs(a.oi_change_pct))
+    );
+
+    const source = selectedDate === todayIST ? 'quote+historical' : 'historical';
+
+    return {
+        source,
+        rows,
+        errorRows,
+        totalScanned: symbols.length,
+        window: '09:15–09:25 IST',
+        thresholds: {
+            minAbsChangePct,
+            minAbsOiChangePct,
+        },
+    };
+}
+
 async function fetchHistoricalDayPair(accessToken, instrumentToken, sel, prev) {
     const path = `instruments/historical/${instrumentToken}/day?from=${encodeURIComponent(prev)}&to=${encodeURIComponent(sel)}`;
     const histRes = await axios.get(`https://api.kite.trade/${path}`, {
@@ -2496,6 +2934,27 @@ async function fetchHistoricalDayPair(accessToken, instrumentToken, sel, prev) {
         change_rs: changeRs,
         change_pct: Number.isFinite(changePct) ? changePct : 0,
     };
+}
+
+async function fetchFutOiChangePctForDay(accessToken, instrumentToken, sel, prev) {
+    const path = `instruments/historical/${instrumentToken}/day?from=${encodeURIComponent(prev)}&to=${encodeURIComponent(sel)}`;
+    const histRes = await axios.get(`https://api.kite.trade/${path}`, {
+        headers: {
+            'X-Kite-Version': '3',
+            Authorization: `token ${API_KEY}:${accessToken}`,
+        },
+    });
+    const candles = histRes.data?.data?.candles ?? [];
+    const cPrev = findDayCandle(candles, prev);
+    const cSel = findDayCandle(candles, sel);
+    if (!cPrev || !cSel) return null;
+    const oiPrev = parseFloat(cPrev[6] ?? NaN);
+    const oiSel = parseFloat(cSel[6] ?? NaN);
+    if (!Number.isFinite(oiPrev) || oiPrev === 0 || !Number.isFinite(oiSel)) {
+        return null;
+    }
+    const pct = ((oiSel - oiPrev) / oiPrev) * 100;
+    return Number.isFinite(pct) ? pct : null;
 }
 
 async function buildNifty50MarketRows(accessToken, selectedDate) {
@@ -2560,13 +3019,16 @@ async function buildNifty50MarketRows(accessToken, selectedDate) {
     return { source: 'historical', rows, quoteMap };
 }
 
-async function buildFnoMarketRows(accessToken, selectedDate) {
+async function buildFnoMarketRows(accessToken, _selectedDate) {
+    const selectedDate = _selectedDate || istDateString();
     const todayIST = istDateString();
-    const quoteUniverse = await loadNseEqUniverse(accessToken);
-    const fnoUnderlyingSymbols = await loadFnoUnderlyingSymbols(accessToken);
-    const fnoSet = new Set(fnoUnderlyingSymbols);
-    const symbols = quoteUniverse.filter((s) => fnoSet.has(s));
+    const fnoFutSymbols = await loadFnoFutUnderlyingSymbols(accessToken);
+    const symbols =
+        fnoFutSymbols.length > 0
+            ? fnoFutSymbols
+            : await loadFnoUnderlyingSymbols(accessToken);
     const quoteMap = await fetchQuoteMapForSymbols(accessToken, symbols);
+    const futMap = await buildFrontMonthFutRowMap(accessToken, selectedDate);
     const rows = [];
 
     if (selectedDate === todayIST) {
@@ -2575,12 +3037,14 @@ async function buildFnoMarketRows(accessToken, selectedDate) {
             const q = quoteMap[key];
             if (!q) continue;
             const m = pctChangeFromQuotes(q);
+            const oiChangePct = oiChangePctFromQuote(q);
             rows.push({
                 symbol,
                 exchange: 'NSE',
                 last_price: m.last_price,
                 change_pct: m.change_pct,
                 change_rs: m.change_rs,
+                oi_change_pct: oiChangePct,
                 sector: 'F&O',
             });
         }
@@ -2589,13 +3053,9 @@ async function buildFnoMarketRows(accessToken, selectedDate) {
     }
 
     const prev = prevWeekdayIso(selectedDate);
-    const concurrency = 8;
-    const chunks = [];
-    for (let i = 0; i < symbols.length; i += concurrency) {
-        chunks.push(symbols.slice(i, i + concurrency));
-    }
-
-    for (const batch of chunks) {
+    const conc = 6;
+    for (let i = 0; i < symbols.length; i += conc) {
+        const batch = symbols.slice(i, i + conc);
         await Promise.all(
             batch.map(async (symbol) => {
                 const key = `NSE:${symbol}`;
@@ -2609,12 +3069,27 @@ async function buildFnoMarketRows(accessToken, selectedDate) {
                         prev
                     );
                     if (!m) return;
+                    let oiChangePct = null;
+                    const fut = futMap.get(symbol);
+                    if (fut?.instrumentToken) {
+                        try {
+                            oiChangePct = await fetchFutOiChangePctForDay(
+                                accessToken,
+                                fut.instrumentToken,
+                                selectedDate,
+                                prev
+                            );
+                        } catch {
+                            oiChangePct = null;
+                        }
+                    }
                     rows.push({
                         symbol,
                         exchange: 'NSE',
                         last_price: m.last_price,
                         change_pct: m.change_pct,
                         change_rs: m.change_rs,
+                        oi_change_pct: oiChangePct,
                         sector: 'F&O',
                     });
                 } catch (e) {
@@ -2656,6 +3131,34 @@ function aggregateSectorRows(marketRows) {
  * Mounted at /api/market so full path is /api/market/nifty50-scanner
  */
 const marketRouter = express.Router();
+marketRouter.get('/fno-stocks', async (req, res) => {
+    const accessToken = getBearerToken(req);
+    if (!accessToken) {
+        return res.status(401).json({
+            error: 'Kite API not connected. Please connect Zerodha from login page.',
+        });
+    }
+    if (!API_KEY) {
+        return res.status(500).json({ error: 'API_KEY not configured' });
+    }
+    const todayIST = istDateString();
+    const rawQueryDate =
+        typeof req.query.date === 'string' ? req.query.date.trim() : '';
+    const selectedDate = normalizeCalendarYmd(rawQueryDate) || todayIST;
+    try {
+        const { source, rows } = await buildFnoMarketRows(accessToken, selectedDate);
+        return res.json({
+            date: selectedDate,
+            source,
+            stockRows: rows,
+        });
+    } catch (error) {
+        console.error(error.response?.data || error.message);
+        res.status(error.response?.status || 500).json(
+            error.response?.data || { error: error.message }
+        );
+    }
+});
 marketRouter.get('/nifty50-scanner', async (req, res) => {
     const accessToken = getBearerToken(req);
     if (!accessToken) {
@@ -2672,7 +3175,12 @@ marketRouter.get('/nifty50-scanner', async (req, res) => {
         typeof req.query.date === 'string' ? req.query.date.trim() : '';
     const selectedDate =
         normalizeCalendarYmd(rawQueryDate) || todayIST;
-    const type = String(req.query.type ?? 'top-gainers');
+    const rawType = req.query.type;
+    const type = String(
+        Array.isArray(rawType) ? rawType[0] : rawType ?? 'top-gainers'
+    )
+        .trim()
+        .toLowerCase();
 
     try {
         if (type === '5min-breakout') {
@@ -2918,6 +3426,46 @@ marketRouter.get('/nifty50-scanner', async (req, res) => {
         );
     }
 });
+
+marketRouter.get('/my-today-fno-scan', async (req, res) => {
+    const accessToken = getBearerToken(req);
+    if (!accessToken) {
+        return res.status(401).json({
+            error: 'Kite API not connected. Please connect Zerodha from login page.',
+        });
+    }
+    if (!API_KEY) {
+        return res.status(500).json({ error: 'API_KEY not configured' });
+    }
+
+    const todayIST = istDateString();
+    const rawQueryDate =
+        typeof req.query.date === 'string' ? req.query.date.trim() : '';
+    const selectedDate = normalizeCalendarYmd(rawQueryDate) || todayIST;
+    if (selectedDate > todayIST) {
+        return res.status(400).json({
+            error: 'Future date not supported',
+            date: selectedDate,
+            todayIST,
+        });
+    }
+
+    try {
+        const out = await buildMyTodayFnoScan(accessToken, selectedDate);
+        return res.json({
+            date: selectedDate,
+            todayIST,
+            ...out,
+            stockRows: out.rows,
+        });
+    } catch (error) {
+        console.error(error.response?.data || error.message);
+        res.status(error.response?.status || 500).json(
+            error.response?.data || { error: error.message }
+        );
+    }
+});
+
 app.use('/api/market', marketRouter);
 
 /** Multiple `i=` params like Kite quote API */

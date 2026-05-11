@@ -6,6 +6,8 @@ import {
   useSearchParams,
 } from "react-router-dom";
 import { useAppShell } from "../../context/AppShellContext";
+import KiteConnectNotice from "../KiteConnectNotice";
+import { isKiteOrBrokerSessionError } from "../../utils/apiError";
 
 type Props = {
   onMenuClick: () => void;
@@ -17,11 +19,22 @@ export const Header: React.FC<Props> = ({ onMenuClick }) => {
   const [, setSearchParams] = useSearchParams();
   const {
     profile,
+    profileLoading,
     authStatus,
     authErrorMessage,
     scanDate,
     setScanDate,
+    kiteApiErrorMessage,
   } = useAppShell();
+
+  const shellKiteRequired =
+    !profileLoading &&
+    authStatus === "failed" &&
+    authErrorMessage === "Zerodha (Kite) session required";
+  const showKiteHeaderBanner =
+    shellKiteRequired ||
+    (kiteApiErrorMessage != null &&
+      isKiteOrBrokerSessionError(kiteApiErrorMessage));
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -200,6 +213,16 @@ export const Header: React.FC<Props> = ({ onMenuClick }) => {
           </div>
         </div>
       </div>
+
+      {showKiteHeaderBanner ? (
+        <div className="border-t border-amber-200 bg-amber-50 px-4 py-3 md:px-6">
+          <KiteConnectNotice
+            shellKiteDisconnected={shellKiteRequired}
+            message={kiteApiErrorMessage}
+            className="border-0 bg-transparent p-0 shadow-none"
+          />
+        </div>
+      ) : null}
 
       <div className="border-t border-sky-100 bg-sky-50 px-4 py-2 text-center text-xs text-sky-900 md:px-6">
         <strong className="font-semibold">Kite Connect</strong> — Market data

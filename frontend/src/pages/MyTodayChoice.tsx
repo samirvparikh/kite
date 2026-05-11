@@ -1,10 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { isAxiosError } from "axios";
 import API from "../services/api";
 import { parseDashDate, useAppShell } from "../context/AppShellContext";
 import CenteredLoader from "../components/CenteredLoader";
-import KiteConnectNotice from "../components/KiteConnectNotice";
 import {
   getApiErrorMessage,
   isKiteOrBrokerSessionError,
@@ -35,14 +33,13 @@ function istToday(): string {
 const MyTodayChoice: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { setScanDate } = useAppShell();
+  const { setScanDate, setKiteApiErrorMessage } = useAppShell();
   const isPublicPage = location.pathname.startsWith("/scanners/");
   const date = searchParams.get("date") ?? istToday();
   const universe = searchParams.get("universe") ?? "nifty50";
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState<PickRow[]>([]);
-  const [placing, setPlacing] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     const token = localStorage.getItem("access_token");
@@ -84,6 +81,15 @@ const MyTodayChoice: React.FC = () => {
     };
   }, [date, universe]);
 
+  useEffect(() => {
+    if (error && isKiteOrBrokerSessionError(error)) {
+      setKiteApiErrorMessage(error);
+    } else {
+      setKiteApiErrorMessage(null);
+    }
+    return () => setKiteApiErrorMessage(null);
+  }, [error, setKiteApiErrorMessage]);
+
   function setUniverse(next: "nifty50" | "top-volume" | "all") {
     const q = new URLSearchParams(searchParams);
     q.set("universe", next);
@@ -105,39 +111,6 @@ const MyTodayChoice: React.FC = () => {
       );
     return scored.slice(0, 3);
   }, [rows]);
-
-  async function placeBuy(row: PickRow) {
-    const qtyRaw = window.prompt(`Quantity for ${row.symbol}`, "1");
-    if (!qtyRaw) return;
-    const qty = parseInt(qtyRaw, 10);
-    if (!Number.isFinite(qty) || qty <= 0) return;
-    const ok = window.confirm(
-      `Place MARKET BUY order?\n${row.symbol} x ${qty} (NSE, MIS)`
-    );
-    if (!ok) return;
-    setPlacing((p) => ({ ...p, [row.symbol]: true }));
-    try {
-      await API.post("/api/kite/orders", {
-        tradingsymbol: row.symbol,
-        exchange: "NSE",
-        quantity: qty,
-        transaction_type: "BUY",
-      });
-      window.alert(`Order placed: BUY ${row.symbol} x ${qty}`);
-    } catch (err: unknown) {
-      let msg = "Order failed";
-      if (isAxiosError(err)) {
-        const d = err.response?.data;
-        if (typeof d === "string") msg = d;
-        else if (d && typeof d === "object" && "message" in d) {
-          msg = String((d as { message: unknown }).message);
-        } else if (err.message) msg = err.message;
-      }
-      window.alert(msg);
-    } finally {
-      setPlacing((p) => ({ ...p, [row.symbol]: false }));
-    }
-  }
 
   if (loading) return <CenteredLoader label="Loading today choices…" />;
 
@@ -184,7 +157,6 @@ const MyTodayChoice: React.FC = () => {
           </Link>
         </div>
 
-        <KiteConnectNotice message={error} />
         {error && !isKiteOrBrokerSessionError(error) && (
           <div className="scanner-card" style={{ color: "#991b1b", borderColor: "#fecaca", background: "#fef2f2" }}>
             {error}
@@ -202,13 +174,12 @@ const MyTodayChoice: React.FC = () => {
                 <th>Target</th>
                 <th>R Factor %</th>
                 <th>%chng</th>
-                <th>Buy</th>
               </tr>
             </thead>
             <tbody>
               {top3.length === 0 ? (
                 <tr>
-                  <td colSpan={8}>No strong picks found for selected date.</td>
+                  <td colSpan={7}>No strong picks found for selected date.</td>
                 </tr>
               ) : (
                 top3.map((r) => {
@@ -243,16 +214,6 @@ const MyTodayChoice: React.FC = () => {
                       </td>
                       <td className={(r.change_pct ?? 0) >= 0 ? "scanner-positive" : "scanner-negative"}>
                         {fmt(r.change_pct)}%
-                      </td>
-                      <td>
-                        <button
-                          type="button"
-                          className="nifty-btn"
-                          onClick={() => void placeBuy(r)}
-                          disabled={Boolean(placing[r.symbol])}
-                        >
-                          {placing[r.symbol] ? "Placing..." : "Buy"}
-                        </button>
                       </td>
                     </tr>
                   );

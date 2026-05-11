@@ -53,6 +53,9 @@ type ShellCtx = {
   permissions: string[];
   can: (slug: string) => boolean;
   refreshSession: () => Promise<void>;
+  /** Shown in header via KiteConnectNotice when a page API returns a Kite session error. */
+  kiteApiErrorMessage: string | null;
+  setKiteApiErrorMessage: (v: string | null) => void;
 };
 
 const AppShellContext = createContext<ShellCtx | null>(null);
@@ -67,6 +70,9 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
   const [currentUserId, setCurrentUserId] = useState<number | null>(null);
   const [roleSlug, setRoleSlug] = useState("");
   const [permissions, setPermissions] = useState<string[]>([]);
+  const [kiteApiErrorMessage, setKiteApiErrorMessage] = useState<string | null>(
+    null
+  );
 
   const setScanDate = useCallback((v: string) => {
     setScanDateState(v);
@@ -83,6 +89,7 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
   const loadSession = useCallback(async () => {
     setAuthStatus("loading");
     setAuthErrorMessage(null);
+    setKiteApiErrorMessage(null);
     setSessionReady(false);
     setCurrentUserId(null);
     setRoleSlug("");
@@ -177,6 +184,8 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
       permissions,
       can,
       refreshSession,
+      kiteApiErrorMessage,
+      setKiteApiErrorMessage,
     }),
     [
       profile,
@@ -191,6 +200,7 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
       permissions,
       can,
       refreshSession,
+      kiteApiErrorMessage,
     ]
   );
 
